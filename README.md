@@ -9,7 +9,7 @@ Made by [Alyssa X](https://alyssax.com)
 
 ## Table of contents
 - [Features](#features)
-- [Installing Mapus](#self-hosting-mapus)
+- [Installing Mapus](#installing-mapus)
 - [Libraries used](#libraries-used)
 
 ## Features
