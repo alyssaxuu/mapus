@@ -1,5 +1,5 @@
 # Mapus
-![Preview](https://media.giphy.com/media/GYC39vBRIUZMWr2wwZ/giphy.gif)
+![Preview](preview.gif)
 <br>
 Maps with real-time collaboration 🗺️
 
