@@ -881,7 +881,7 @@ $(document).ready(function(){
       }
   }
 
-  // Temporary sign in
+  // Sign in
   function signIn() {
     var provider = new firebase.auth.GoogleAuthProvider();
 
