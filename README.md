@@ -13,17 +13,17 @@ Made by [Alyssa X](https://alyssax.com)
 - [Libraries used](#libraries-used)
 
 ## Features
-🙌 Real-time collaboration to help plan trips synchronously
-✏️ Draw to highlight areas on the map
-📏 Create lines to designate paths and measure distance
-📐 Create areas to mark different zones
-📍 Create markers to save places on the map
-☕️ Find places and things to do nearby
-🔍 Search and navigate to specific places
-👀 Observe other users by clicking on their avatar
-📝 View a list of all the annotations, and toggle their visibility
-💾 Export the map data as GeoJSON
-...and much more - all for free!
+🙌 Real-time collaboration to help plan trips synchronously<br>
+✏️ Draw to highlight areas on the map<br>
+📏 Create lines to designate paths and measure distance<br>
+📐 Create areas to mark different zones<br>
+📍 Create markers to save places on the map<br>
+☕️ Find places and things to do nearby<br>
+🔍 Search and navigate to specific places<br>
+👀 Observe other users by clicking on their avatar<br>
+📝 View a list of all the annotations, and toggle their visibility<br>
+💾 Export the map data as GeoJSON<br>
+...and much more - all for free!<br>
 
 
 It's basically Google's [MyMaps](google.com/mymaps), except it has real-time collaboration.
