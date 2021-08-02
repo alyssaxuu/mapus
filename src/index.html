@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+  <link rel="stylesheet" href="styles.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
+</head>
+<body style="margin:0px;">
+  <div id="share">
+    <div id="share-nav">
+      <span>Share Cool Map</span>
+      <img src="assets/close-button.svg" id="close-share">
+    </div>
+    <input value="https://coollink.com/haha" id="share-url" readonly="readonly">
+    <div id="share-copy">Copy link</div>
+  </div>
+  <div id="popup">
+    <div class="header-text">Welcome to Mapsu!</div>
+    <div class="subheader-text">To get started, click below to sign in with Google.</div>
+    <div id="google-signin"><img src="assets/google-logo.svg"> Sign in with Google</div>
+  </div>
+  <div id="overlay"></div>
+  <div id="more-menu">
+    <div class="more-item" id="geojson">Export to GeoJSON</div>
+    <div class="more-item">GitHub repo</div>
+    <div class="more-item" id="logout">Log out</div>
+  </div>
+  <div id="sidebar">
+    <div id="map-details" class="section">
+      <input id="map-name" value="Cool map 👻" disabled>
+      <input id="map-description" value="Let's all collaborate here">
+      <div id="more-vertical">
+        <img src="assets/more-vertical.svg">
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-name">Find nearby</div>
+      <table>
+        <tr>
+          <th class="find-nearby" data-type="supermarket" data-color="#5EBE86" data-others="convenience,deli,organic,markerplace">
+            <img src="assets/groceries-button.svg"><br>
+            Groceries
+          </th>
+          <th class="find-nearby" data-type="fashion" data-color="#A564D2" data-others="beauty,art,bicycle,books,carpet,clothes,computer,cosmetics,department_store,electronics,fashion,florist,furniture,garden_centre,general,gift,hardware,jewelry,kiosk,mall,music,shoes,shopping_centre,sports,stationery,toys">
+            <img src="assets/shopping-button.svg"><br>
+            Shopping
+          </th>
+          <th class="find-nearby" data-type="restaurant" data-color="#4890E8" data-others="bar,fast-food,seafood,food,organic,deli,confectionery,bakery">
+            <img src="assets/food-button.svg"><br>
+            Food
+          </th>
+          <th class="find-nearby" data-type="bar" data-color="#F9D458" data-others="beverages,wine,pub,cafe">
+            <img src="assets/drinks-button.svg"><br>
+            Drinks
+          </th>
+        </tr>
+        <tr>
+          <th class="find-nearby" data-type="atm" data-color="#634FF1" data-others="bank,coworking,embassy,library,police,post_box,post_office">
+            <img src="assets/services-button.svg"><br>
+            Services
+          </th>
+          <th class="find-nearby" data-type="hospital" data-color="#E15F59" data-others="pharmacy,massage,optician,salon,hairdresser,clinic,dentist,doctors,gym">
+            <img src="assets/health-button.svg"><br>
+            Health
+          </th>
+          <th class="find-nearby" data-type="hotel" data-color="#AC6C48" data-others="chalet,camp_site,caravan_site,guest_house,hostel,motel">
+            <img src="assets/hotels-button.svg"><br>
+            Hotels
+          </th>
+          <th class="find-nearby" data-type="station" data-color="#718390">
+            <img src="assets/transport-button.svg"><br>
+            Transport
+          </th>
+        </tr>
+      </table>
+    </div>
+    <div class="section" id="annotations-section">
+      <div id="annotations-header">
+        <div class="section-name">Annotations</div>
+        <div id="hide-annotations">Hide all</div>
+      </div>
+      <div id="annotations-list">
+      </div>
+    </div>
+    <div class="section" id="attribution-section">
+      <div class="section-name">Made by Alyssa X</div>
+      <div id="attribution">© OpenStreetMap contributors</div>
+    </div>
+  </div>
+  <div id="search-box">
+    <input id="search-input" placeholder="Search for a place"/>
+    <img src="assets/search-icon.svg" >
+  </div>
+  <div id="right-nav">
+    <div id="share-button">Share</div>
+  </div>
+  <div id="drawing-controls" class="noselect">
+    <div id="cursor-tool" class="tool tool-active">
+      <img src="assets/cursor-tool.svg">
+    </div>
+    <div id="pen-tool" class="tool">
+      <img src="assets/pen-tool.svg">
+    </div>
+    <div id="eraser-tool" class="tool">
+      <img src="assets/eraser-tool.svg">
+    </div>
+    <div id="marker-tool" class="tool">
+      <img src="assets/marker-tool.svg">
+    </div>
+    <div id="path-tool" class="tool">
+      <img src="assets/path-tool.svg">
+    </div>
+    <div id="area-tool" class="tool">
+      <img src="assets/area-tool.svg">
+    </div>
+    <div id="color-picker">
+      <div id="inner-color"></div>
+      <div id="color-list">
+        <div class="color" id="color1" data-color="#E15F59"></div>
+        <div class="color" id="color2" data-color="#F29F51"></div>
+        <div class="color" id="color3" data-color="#F9D458"></div>
+        <div class="color" id="color4" data-color="#5EBE86"></div>
+        <div class="color" id="color5" data-color="#4890E8"></div>
+        <div class="color" id="color6" data-color="#634FF1"></div>
+        <div class="color" id="color7" data-color="#A564D2"></div>
+        <div class="color" id="color8" data-color="#222222"></div>
+      </div>
+    </div>
+  </div>
+  <div id="location-control">
+    <img src="assets/location-icon.svg">
+  </div>
+  <div id="zoom-controls" class="noselect">
+    <div id="zoom-in"><img src="assets/zoomin.svg"></div>
+    <div id="zoom-out"><img src="assets/zoomout.svg"></div>
+  </div>
+  <div id="outline">
+    <div id="observing-name"></div>
+  </div>
+  <div id="mapDiv"></div>
+  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-analytics.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.2.8/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.2.8/firebase-storage.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-firestore.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-database.js"></script>
+  <script>
+    // Your web app's Firebase configuration
+    var firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "DOMAIN.firebaseapp.com",
+      projectId: "PROJECT_ID",
+      databaseURL: "DB_URL.firebaseio.com",
+      storageBucket: "DOMAIN.appspot.com",
+      messagingSenderId: "ID",
+      appId: "APP_ID"
+    };
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    firebase.analytics();
+  </script>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script>
+  <script src="leaflet.min.js"></script>
+  <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
