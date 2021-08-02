@@ -71,14 +71,12 @@ $(document).ready(function(){
     map.setMaxBounds([[84.67351256610522, -174.0234375], [-58.995311187950925, 223.2421875]]);
 
     // Set the tile layer. Could use Mapbox, OpenStreetMap, etc.
-    L.tileLayer('https://api.mapbox.com/styles/v1/alyssaxuu/ckr7v3hfk3qqk17qfu7zapbag/tiles/256/{z}/{x}/{y}@2x?access_token=pk.eyJ1IjoiYWx5c3NheHV1IiwiYSI6ImNrcjd1eXE0NDNicG8ycG54Z3ZsbWd1MDQifQ.Fr1_TnBXhGUAjYD0LuuOGQ', {
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
       zoomControl: false,
       zoomOffset: -1,
       minZoom:3,
-      noWrap: true,
-      tileSize:512,
-      accessToken: 'pk.eyJ1IjoiYWx5c3NheHV1IiwiYSI6ImNrcjd2aTg3cTJycDMzMG1uZ2VxODNkdjEifQ.CuNTOgtueu_wAO21idRZ3w'
+      noWrap: true
     }).addTo(map);
 
     // Hide the default zoom control. I want a custom one!
