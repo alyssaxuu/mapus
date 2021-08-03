@@ -282,6 +282,9 @@ th img {
   padding-left: 15px;
   padding-right: 15px;
   line-height: 40px;
+  text-decoration: none;
+  display: block;
+  color: var(--text-black)!important;
 }
 .more-item:first-child {
   border-bottom: 1px solid var(--border);
