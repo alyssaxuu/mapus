@@ -6,7 +6,6 @@ Maps with real-time collaboration 🗺️
 Mapus is a tool to explore and annotate collaboratively on a map. You can draw, add markers, lines, areas, find places to go, observe other users, and much more.
 
 <a href="https://www.producthunt.com/posts/mapus?utm_source=badge-featured&utm_medium=badge&utm_souce=badge-mapus" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=307018&theme=light" alt="Mapus - Open source map tool with real-time collaboration | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" /></a>
-<a href="https://news.ycombinator.com/item?id=28058744" target="_blank"><img height=53 src="https://hackerbadge.now.sh/api?id=28058744&type=orange" alt="Featured on HackerNews"></a>
 
 Made by [Alyssa X](https://alyssax.com)
 
