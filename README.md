@@ -32,7 +32,7 @@ Made by [Alyssa X](https://alyssax.com)
 ...and much more - all for free!<br>
 
 
-It's basically Google's [MyMaps](google.com/mymaps), except it has real-time collaboration.
+It's basically Google's [MyMaps](https://www.google.com/maps/about/mymaps/), except it has real-time collaboration.
 
 ## Installing Mapus
 Since real-time multiplayer can get expensive (even though Firebase has a pretty generous free plan), you'll need to self-host Mapus to use it. Here's how:
