@@ -1519,6 +1519,7 @@ $(document).ready(function(){
         mapdescription = snapshot.val().description;
         $("#map-name").val(mapname);
         $("#map-description").val(mapdescription);
+        $("#share-nav span").html("Share "+mapname);
       });
 
       // Check current users on startup
