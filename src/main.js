@@ -74,7 +74,6 @@ $(document).ready(function(){
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
       zoomControl: false,
-      zoomOffset: -1,
       minZoom:3,
       noWrap: true
     }).addTo(map);
