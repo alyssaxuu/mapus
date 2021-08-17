@@ -885,7 +885,7 @@ $(document).ready(function(){
     var provider = new firebase.auth.GoogleAuthProvider();
 
     // Make sure the session persists after closing the window so the user doesn't have to log in every time
-    firebase.auth().setPersistence(firebase.auth.Auth.Persistence.SESSION)
+    firebase.auth().setPersistence(firebase.auth.Auth.Persistence.LOCAL)
     .then(() => {
       // Sign in using Google
       firebase.auth().signInWithPopup(provider).then((result) => {
