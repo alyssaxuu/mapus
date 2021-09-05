@@ -275,7 +275,7 @@ $(document).ready(function(){
   function search() {
     $.get('https://nominatim.openstreetmap.org/search?q='+sanitize($("#search-box input").val())+'&format=json', function(data) {
       // Navigate to the first result of the search query
-      map.panTo(new L.LatLng(data[0].lat, data[1].lon));
+      map.panTo(new L.LatLng(data[0].lat, data[0].lon));
     })
   }
 
