@@ -1,14 +1,18 @@
 $(document).ready(function(){
   // Coordinates to center the map. Could let the user choose when creating a room & persist when sharing a link (via GET params)
-  const lat = 51.52;
-  const lon = -0.09;
+  const lat = 31.23070;
+  const lon = 121.48696;
 
   // Initialize the Leaflet map
   var map = L.map('mapDiv', {
     renderer: L.canvas({ tolerance: 10 })
   }).setView([lat, lon], 13);
   L.PM.setOptIn(true);
-  var db = firebase.database();
+  var currentUser = null;      // normalized Supabase user ({uid, displayName, photoURL})
+  var userCache = {};          // user_id -> latest room_users row
+  var onlineIds = null;        // set of uids currently online (Realtime Presence)
+  var presenceChannel = null;
+  var dataLoaded = false;
   var mapname = "";
   var oldname = "";
   var mapdescription = "";
@@ -36,6 +40,146 @@ $(document).ready(function(){
   var place_ids = [];
   var room = "";
 
+  // ---------------------------------------------------------------
+  // Supabase data helpers
+  // The original app addressed the Firebase Realtime Database with
+  // db.ref("rooms/<room>/..."). Each of those paths is a table here.
+  // ---------------------------------------------------------------
+
+  function logResult(res) {
+    if (res && res.error) console.error("[supabase]", res.error.message || res.error);
+    return res;
+  }
+
+  function normalizeUser(u) {
+    if (!u) return null;
+    var meta = u.user_metadata || {};
+    return {
+      uid: u.id,
+      email: u.email || "",
+      displayName: meta.full_name || meta.name || (u.email ? u.email.split("@")[0] : "User"),
+      photoURL: meta.avatar_url || meta.picture || null
+    };
+  }
+
+  function shapeFromRow(row) {
+    if (!row) return row;
+    row.user = row.user_id;             // the rest of the app speaks "user"
+    row.desc = row.description || "";   // ...and "desc"
+    return row;
+  }
+
+  // crypto.randomUUID needs a secure context; fall back when served over plain http on a LAN IP
+  function uuidv4() {
+    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c){
+      var r = Math.random() * 16 | 0, v = c === "x" ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  // Per-object write queue.
+  // Firebase ordered every .set()/.push() on one socket; PostgREST requests can
+  // overtake each other, so writes for the same object are chained explicitly.
+  // This guarantees the INSERT lands before the first coordinate append.
+  var objectWrites = {};
+
+  function queueObjectWrite(id, fn) {
+    var prev = objectWrites[id] || Promise.resolve();
+    var next = prev.then(fn).catch(function(e){
+      console.error("[supabase]", e && e.message ? e.message : e);
+    });
+    objectWrites[id] = next;
+    return next;
+  }
+
+  function createObject(data) {
+    var id = uuidv4();
+    var row = Object.assign({ id: id, room_id: room }, data);
+    if (row.user !== undefined) { row.user_id = row.user; delete row.user; }
+    if (row.desc !== undefined) { row.description = row.desc; delete row.desc; }
+    queueObjectWrite(id, function(){
+      return supabaseClient.from("room_objects").insert(row).then(logResult);
+    });
+    return id;
+  }
+
+  function updateObject(id, data) {
+    var patch = Object.assign({}, data);
+    if (patch.desc !== undefined) { patch.description = patch.desc; delete patch.desc; }
+    if (patch.user !== undefined) { patch.user_id = patch.user; delete patch.user; }
+    queueObjectWrite(id, function(){
+      return supabaseClient.from("room_objects").update(patch).eq("id", id).then(logResult);
+    });
+  }
+
+  function deleteObject(id) {
+    if (!id) return;
+    queueObjectWrite(id, function(){
+      return supabaseClient.from("room_objects").delete().eq("id", id).then(logResult);
+    });
+  }
+
+  // Coordinates are buffered and sent as one batch (~8 requests/s max) instead of
+  // one request per mousemove event, which keeps the write queue from backing up.
+  var coordBuffers = {};  // object id -> pending [[lat, lng], ...]
+  var coordTimers = {};   // object id -> flush timer
+
+  function appendCoord(id, lat, lng) {
+    if (!id) return;
+    var buf = coordBuffers[id] || (coordBuffers[id] = []);
+    buf.push([lat, lng]);
+    if (!coordTimers[id]) {
+      coordTimers[id] = window.setTimeout(function(){ flushCoords(id); }, 120);
+    }
+  }
+
+  function flushCoords(id) {
+    if (coordTimers[id]) { window.clearTimeout(coordTimers[id]); coordTimers[id] = null; }
+    var buf = coordBuffers[id] || [];
+    coordBuffers[id] = [];
+    if (!buf.length) return;
+    var payload = buf.map(function(p){ return { set: p }; });
+    queueObjectWrite(id, function(){
+      return supabaseClient.rpc("append_coords", { p_object_id: id, p_coords: payload }).then(logResult);
+    });
+  }
+
+  function updateUser(data) {
+    if (!currentUser || !room) return;
+    var row = Object.assign({ room_id: room, user_id: currentUser.uid }, data);
+    supabaseClient.from("room_users").upsert(row, { onConflict: "room_id,user_id" }).then(logResult);
+  }
+
+  function updateRoom(data) {
+    if (!room) return;
+    supabaseClient.from("rooms").update(data).eq("id", room).then(logResult);
+  }
+
+  // Cursor / viewport updates are throttled to ~8 writes per second instead of one per mousemove
+  var lastCursorSent = 0;
+  var cursorSendTimer = null;
+
+  function sendCursor(lat, lng) {
+    var payload = {
+      view_lat: map.getBounds().getCenter().lat,
+      view_lng: map.getBounds().getCenter().lng
+    };
+    if (!dragging) {
+      payload.lat = lat;
+      payload.lng = lng;
+    }
+    var send = function(){
+      lastCursorSent = Date.now();
+      updateUser(payload);
+    };
+    if (Date.now() - lastCursorSent > 120) {
+      send();
+    } else if (!cursorSendTimer) {
+      cursorSendTimer = window.setTimeout(function(){ cursorSendTimer = null; send(); }, 120);
+    }
+  }
+
   // Available cursor colors
   var colors = ["#EC1D43", "#EC811D", "#ECBE1D", "#B6EC1D", "#1DA2EC", "#781DEC", "#CF1DEC", "#222222"];
 
@@ -43,46 +187,94 @@ $(document).ready(function(){
   var params = new URLSearchParams(window.location.search);
 
   // Check if URL has the file GET parameter, use it to set the room. Could rewrite URL to be more fancy
-  if (params.has('file')) {
+  var ROOM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (params.has('file') && ROOM_ID_RE.test(params.get('file'))) {
     room = params.get('file');
     $("#share-url").val(window.location.href);
+  } else if (params.has('file')) {
+    // Old Firebase keys (and anything malformed) aren't valid room ids any more
+    params.delete('file');
+    console.error("[supabase] Ignoring invalid room id in the URL");
   }
 
-  // Oddly enough Firebase auth doesn't initialize right on startup. It needs a slight delay?
-  window.setTimeout(function(){
-    if (checkAuth() && params.has('file')) {
+  // Resolve the Supabase session first. This also finishes the email confirmation
+  // link that brings people back to this page (?code=...).
+  async function boot() {
+    var res = await supabaseClient.auth.getSession();
+    currentUser = normalizeUser(res.data && res.data.session && res.data.session.user);
+
+    supabaseClient.auth.onAuthStateChange(function(event, authSession){
+      currentUser = normalizeUser(authSession && authSession.user);
+      if (event === "SIGNED_IN" && params.has("file") && !dataLoaded) {
+        // Deferred so no API call happens inside the auth callback
+        window.setTimeout(checkData, 0);
+      }
+    });
+
+    // Drop the auth ?code= from the address bar once it has been exchanged
+    // (used by email confirmation links, which come back to this page)
+    if (params.has("code")) {
+      params.delete("code");
+      window.history.replaceState({}, document.title, window.location.pathname + (params.toString() ? "?" + params.toString() : ""));
+      $("#share-url").val(window.location.href);
+    }
+
+    if (currentUser && params.has("file")) {
       checkData();
     } else {
-      if (checkAuth() && !params.has('file')) {
-        // Prompt the user to create a map
-        $("#popup").find(".header-text").html("Create a map");
-        $("#popup").find(".subheader-text").html("Maps can be shared with friends to collaborate in real-time.");
-        $("#google-signin").attr("id", "create-map");
-        $("#create-map").html("Create a map");
-      }
+      // Signed in but no map selected -> offer to create one, otherwise show the auth form
+      if (currentUser) showSignedInState();
+      else showSignInState();
       // Show popup & overlay
       $("#overlay").addClass("signin");
       $("#popup").addClass("signin");
     }
-  }, 500)
+
+    // Surface auth errors (expired confirmation link, misconfigured project) instead of silently bouncing back
+    var authError = params.get("error_description") || params.get("error");
+    if (!currentUser && authError) {
+      showAuthMessage(authError, true);
+      params.delete("error");
+      params.delete("error_description");
+      window.history.replaceState({}, document.title, window.location.pathname + (params.toString() ? "?" + params.toString() : ""));
+    }
+  }
+  boot();
 
   function initMap() {
     // Makimum bounds for zooming and panning
     map.setMaxBounds([[84.67351256610522, -174.0234375], [-58.995311187950925, 223.2421875]]);
 
-    // Set the tile layer. Could use Mapbox, OpenStreetMap, etc.
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 18,
-      zoomControl: false,
-      minZoom:3,
-      noWrap: true
+    // Base tiles: Mapbox Streets raster tiles.
+    //
+    // Two options are not optional here:
+    //  - id: Leaflet only substitutes {x}/{y}/{z}/{s}; {id} and {accessToken} come from
+    //    the options object. Miss it and every request goes out as .../styles/v1/%7Bid%7D/...
+    //    which returns 404, leaving a blank map.
+    //  - tileSize 512 + zoomOffset -1: a 512 tile covers twice the ground of a normal
+    //    256 tile at the same z, so Leaflet has to ask for z-1. Using either one alone
+    //    shifts the whole map by one zoom level.
+    // @2x turns those 512 CSS px into a 1024px image, which stays sharp on retina;
+    // drop the @2x to cut tile weight from ~240KB to ~80KB if bandwidth matters more.
+    L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/512/{z}/{x}/{y}@2x?access_token=your-api-key', {
+      id: "mapbox/streets-v12",
+      tileSize: 512,
+      zoomOffset: -1,
+      maxZoom: 22,
+      zoomControl: true,
+      minZoom: 3,
+      noWrap: true,
+      attribution: '&copy; <a href="https://www.mapbox.com/about/maps/" target="_blank">Mapbox</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors'
+    }).on("tileerror", function(e){
+      // Surfaces an expired token / quota problem instead of a silent grey map
+      console.error("[mapbox] tile failed:", e.tile && e.tile.src);
     }).addTo(map);
 
     // Hide the default zoom control. I want a custom one!
     map.removeControl(map.zoomControl);
 
     // No idea why but Leaflet seems to place default markers on startup...
-    $("img[src='https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png']").remove();
+    $("img[src='https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png']").remove();
   }
 
   // Hints for drawing lines or polygons
@@ -280,33 +472,109 @@ $(document).ready(function(){
   }
 
   // Find nearby
+  // Nominatim's documented "amenity-only" search: bounded=1 plus a viewbox and the
+  // category as a [phrase] in q. Three things used to keep these buttons dead:
+  //   - exclude_place_ids was sent as a JSON array ("[]") instead of a comma separated
+  //     list, which makes Nominatim reject the whole request;
+  //   - the category went into an amenity= filter, which is part of the structured
+  //     query and only works together with a place name/city;
+  //   - the markers' tooltip was interactive:false, so Save/Remove were unclickable.
+  var nearbyBusy = false;
+
   function findNearby() {
+    if (checkAuth() == false || nearbyBusy) return;
+
+    var button = $(this);
+    var locationtype = button.attr("data-type");
+    var markercolor = button.attr("data-color");
+    if (!locationtype) return;
+
+    var bounds = map.getBounds();
+    var viewbox = [
+      bounds.getNorthWest().lng, bounds.getNorthWest().lat,
+      bounds.getSouthEast().lng, bounds.getSouthEast().lat
+    ].join(",");
+
+    var params = { format: "geocodejson", viewbox: viewbox, bounded: 1, limit: 20 };
+    // Only send the exclusion list when there is something to exclude
+    if (place_ids.length > 0) params.exclude_place_ids = place_ids.join(",");
+
+    nearbyBusy = true;
+    button.addClass("nearby-loading");
+
+    function finish() {
+      nearbyBusy = false;
+      button.removeClass("nearby-loading");
+    }
+
+    $.ajax({
+      url: "https://nominatim.openstreetmap.org/search",
+      dataType: "json",
+      data: $.extend({ q: "[" + locationtype + "]" }, params)
+    }).done(function(data) {
+      var features = (data && data.features) || [];
+      if (features.length > 0) {
+        renderNearbyPlaces(features, locationtype, markercolor);
+        finish();
+        return;
+      }
+
+      // Categories without a special phrase: retry as a structured amenity query.
+      // Spaced out to stay inside Nominatim's 1 request/second policy.
+      window.setTimeout(function() {
+        $.ajax({
+          url: "https://nominatim.openstreetmap.org/search",
+          dataType: "json",
+          data: $.extend({ amenity: locationtype }, params)
+        }).done(function(fallback) {
+          renderNearbyPlaces((fallback && fallback.features) || [], locationtype, markercolor);
+        }).fail(function(xhr) {
+          console.error("[nearby] lookup failed:", xhr.status, xhr.statusText);
+        }).always(finish);
+      }, 1100);
+    }).fail(function(xhr) {
+      console.error("[nearby] lookup failed:", xhr.status, xhr.statusText);
+      finish();
+    });
+  }
+
+  // Draw the POIs returned by Nominatim as removable preview markers
+  function renderNearbyPlaces(features, locationtype, markercolor) {
     var user = checkAuth();
-    if (checkAuth() != false) {
-      var locationtype = $(this).attr("data-type");
-      var markercolor = $(this).attr("data-color");
-      var coordinates = map.getBounds().getNorthWest().lng+','+map.getBounds().getNorthWest().lat+','+map.getBounds().getSouthEast().lng+','+map.getBounds().getSouthEast().lat;
+    if (user == false) return;
 
-      // Call Nominatim API to get places nearby the current view, of the amenity that the user has selected
-      $.get('https://nominatim.openstreetmap.org/search?viewbox='+coordinates+'&format=geocodejson&limit=20&bounded=1&amenity='+locationtype+'&exclude_place_ids='+JSON.stringify(place_ids), function(data) {
-        // Custom marker icon depending on the amenity
-        var marker_icon = L.icon({
-          iconUrl: 'assets/'+locationtype+'-marker.svg',
-          iconSize:     [30, 30],
-          iconAnchor:   [15, 30],
-          shadowAnchor: [4, 62],
-          popupAnchor:  [-3, -76]
-        });
-        data.features.forEach(function(place){
-          // Create a marker for the place
-          var marker = L.marker([place.geometry.coordinates[1], place.geometry.coordinates[0]], {icon:marker_icon, pane:"overlayPane", interactive:true}).addTo(map);
+    var marker_icon = L.icon({
+      iconUrl: "assets/" + locationtype + "-marker.svg",
+      iconSize:     [30, 30],
+      iconAnchor:   [15, 30],
+      shadowAnchor: [4, 62],
+      popupAnchor:  [-3, -76]
+    });
 
-          // Create a popup with information about the place, and the options to save it or delete it (it's only local for now)
-          marker.bindTooltip('<h1>'+place.properties.geocoding.name+'</h1><div class="shape-data"><h3><img src="assets/marker-small-icon.svg">'+place.geometry.coordinates[1].toFixed(5)+', '+place.geometry.coordinates[0].toFixed(5)+'</h3></div><br><div id="buttons2"><button class="cancel-button-place" data-id='+place.properties.geocoding.place_id+'>Remove</button><button class="save-button-place" data-id='+place.properties.geocoding.place_id+'>Save</button></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:false, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: 0, y: -35})});
-          places.push({id: "", place_id:place.properties.geocoding.place_id, user:user.uid, name:place.properties.geocoding.name, desc:"", lat:place.geometry.coordinates[1], lng:place.geometry.coordinates[0], trigger:marker, completed:true, marker:marker, m_type:locationtype, type:"marker", session:session, color:markercolor});
-          place_ids.push(place.properties.geocoding.place_id);
-        });
-      });
+    var added = 0;
+    features.forEach(function(place) {
+      var coordinates = place && place.geometry && place.geometry.coordinates;
+      var geocoding = (place && place.properties && place.properties.geocoding) || {};
+      if (!coordinates || coordinates.length < 2 || !geocoding.place_id) return;
+      // Skip anything already on the map: the API does not always honour the exclusion list
+      if (places.find(function(existing){ return existing.place_id == geocoding.place_id; })) return;
+
+      var lat = coordinates[1];
+      var lng = coordinates[0];
+      var name = geocoding.name || geocoding.label || "Unnamed place";
+
+      var marker = L.marker([lat, lng], {icon: marker_icon, pane: "overlayPane", interactive: true}).addTo(map);
+
+      // interactive:true so the Save/Remove buttons inside the tooltip can be clicked
+      marker.bindTooltip('<h1>'+name+'</h1><div class="shape-data"><h3><img src="assets/marker-small-icon.svg">'+lat.toFixed(5)+', '+lng.toFixed(5)+'</h3></div><br><div id="buttons2"><button class="cancel-button-place" data-id="'+geocoding.place_id+'">Remove</button><button class="save-button-place" data-id="'+geocoding.place_id+'">Save</button></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:true, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: 0, y: -35})});
+
+      places.push({id: "", place_id: geocoding.place_id, user: user.uid, name: name, desc: "", lat: lat, lng: lng, trigger: marker, completed: true, marker: marker, m_type: locationtype, type: "marker", session: session, color: markercolor});
+      place_ids.push(geocoding.place_id);
+      added++;
+    });
+
+    if (added == 0) {
+      console.log("[nearby] no " + locationtype + " found in this view");
     }
   }
 
@@ -315,10 +583,9 @@ $(document).ready(function(){
     var user = checkAuth();
     if (checkAuth() != false) {
       var inst = places.find(x => x.place_id == $(this).attr("data-id"));
-      currentid = db.ref("rooms/"+room+"/objects").push().key;
-      var key = currentid;
-      inst.id = currentid;
-      db.ref("rooms/"+room+"/objects/"+currentid).set({
+      // Ignore unknown places and double clicks on an already saved one
+      if (!inst || inst.id) return;
+      currentid = createObject({
         color: inst.color,
         place_id: inst.place_id,
         lat: inst.lat,
@@ -330,6 +597,8 @@ $(document).ready(function(){
         name: inst.name,
         desc: ""
       });
+      var key = currentid;
+      inst.id = currentid;
       objects.push(inst);
 
       // Create a popup with information about the place
@@ -339,13 +608,16 @@ $(document).ready(function(){
 
   // Remove nearby location
   function cancelNearby() {
-    var inst = places.find(x => x.place_id == $(this).attr("data-id"));
-    inst.marker.remove();
+    var placeId = $(this).attr("data-id");
+    var inst = places.find(x => x.place_id == placeId);
+    if (!inst) return;
+    if (inst.marker) inst.marker.remove();
+    // Compare against the place id: inst.id is only set once the place has been saved
     places = $.grep(places, function(e){
-         return e.place_id != inst.id;
+         return e.place_id != inst.place_id;
     });
     place_ids = $.grep(place_ids, function(e){
-         return e != inst.id;
+         return e != inst.place_id;
     });
   }
 
@@ -399,7 +671,7 @@ $(document).ready(function(){
       if (inst.type == "area") {
         // Create a popup showing info about the area
         inst.trigger.bindTooltip('<h1>'+inst.name+'</h1><h2>'+inst.desc+'</h2><div class="shape-data"><h3><img src="assets/area-icon.svg">'+inst.area+' km&sup2;</h3></div><div class="shape-data"><h3><img src="assets/perimeter-icon.svg">'+inst.distance+' km</h3></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:false, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: -15, y: 18})});
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           area:inst.area,
           distance: inst.distance,
           name: inst.name,
@@ -409,7 +681,7 @@ $(document).ready(function(){
       } else if (inst.type == "line") {
         // Create a popup showing info about the line
         inst.trigger.bindTooltip('<h1>'+inst.name+'</h1><h2>'+inst.desc+'</h2><div class="shape-data"><h3><img src="assets/distance-icon.svg">'+inst.distance+' km</h3></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:false, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: -15, y: 18})});
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           distance: inst.distance,
           name: inst.name,
           desc: inst.desc,
@@ -418,7 +690,7 @@ $(document).ready(function(){
       } else if (inst.type == "marker") {
         // Create a popup showing info about the marker
         inst.trigger.bindTooltip('<h1>'+inst.name+'</h1><h2>'+inst.desc+'</h2><div class="shape-data"><h3><img src="assets/marker-small-icon.svg">'+inst.lat.toFixed(5)+', '+inst.lng.toFixed(5)+'</h3></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:false, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: 0, y: -35})});
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           name: inst.name,
           desc: inst.desc,
           completed: true
@@ -451,7 +723,7 @@ $(document).ready(function(){
       if (inst.type == "area") {
         // Create a popup showing info about the area
         inst.trigger.bindTooltip('<h1>'+inst.name+'</h1><h2>'+inst.desc+'</h2><div class="shape-data"><h3><img src="assets/area-icon.svg">'+inst.area+' km&sup2;</h3></div><div class="shape-data"><h3><img src="assets/perimeter-icon.svg">'+inst.distance+' km</h3></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:false, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: -15, y: 18})});
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           area:inst.area,
           distance: inst.distance,
           name: inst.name,
@@ -461,7 +733,7 @@ $(document).ready(function(){
       } else if (inst.type == "line") {
         // Create a popup showing info about the line
         inst.trigger.bindTooltip('<h1>'+inst.name+'</h1><h2>'+inst.desc+'</h2><div class="shape-data"><h3><img src="assets/distance-icon.svg">'+inst.distance+' km</h3></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:false, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: -15, y: 18})});
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           distance: inst.distance,
           name: inst.name,
           desc: inst.desc,
@@ -470,7 +742,7 @@ $(document).ready(function(){
       } else if (inst.type == "marker") {
         // Create a popup showing info about the marker
         inst.trigger.bindTooltip('<h1>'+inst.name+'</h1><h2>'+inst.desc+'</h2><div class="shape-data"><h3><img src="assets/marker-small-icon.svg">'+inst.lat.toFixed(5)+', '+inst.lng.toFixed(5)+'</h3></div><div class="arrow-down"></div>', {permanent: false, direction:"top", interactive:false, bubblingMouseEvents:false, className:"create-shape-flow", offset: L.point({x: 0, y: -35})});
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           name: inst.name,
           desc: inst.desc,
           completed: true
@@ -504,8 +776,7 @@ $(document).ready(function(){
           linelastcoord = e.layer._latlngs[e.layer._latlngs.length-1];
           if (e.layer._latlngs.length == 1) {
             // If this is the first vertex, get a key and add the new shape in the database
-            currentid = db.ref("rooms/"+room+"/objects").push().key;
-            db.ref("rooms/"+room+"/objects/"+currentid).set({
+            currentid = createObject({
               color: color,
               initlat: e.layer._latlngs[0].lat,
               initlng: e.layer._latlngs[0].lng,
@@ -516,18 +787,13 @@ $(document).ready(function(){
               desc: "",
               distance: 0,
               area: 0,
-              completed: false,
-              path: ""
+              completed: false
             });
-            db.ref("rooms/"+room+"/objects/"+currentid+"/coords/").push({
-              set:[linelastcoord.lat,linelastcoord.lng]
-            });
+            appendCoord(currentid, linelastcoord.lat, linelastcoord.lng);
             objects.push({id:currentid, local:true, color:color, user:user.uid, name:"Area", desc:"", trigger:"", distance:0, area:0, layer:"", type:"area", session:session, completed:false});
           } else {
             // If this is not the first vertex, update the data in the database with the latest coordinates
-            db.ref("rooms/"+room+"/objects/"+currentid+"/coords/").push({
-              set:[linelastcoord.lat,linelastcoord.lng]
-            })
+            appendCoord(currentid, linelastcoord.lat, linelastcoord.lng);
           }
         } else if (e.shape == "Line") {
           lineon = true;
@@ -535,8 +801,7 @@ $(document).ready(function(){
           linelastcoord = e.layer._latlngs[e.layer._latlngs.length-1];
           if (e.layer._latlngs.length == 1) {
             // If this is the first vertex, get a key and add the new shape in the database
-            currentid = db.ref("rooms/"+room+"/objects").push().key;
-            db.ref("rooms/"+room+"/objects/"+currentid).set({
+            currentid = createObject({
               color: color,
               initlat: e.layer._latlngs[0].lat,
               initlng: e.layer._latlngs[0].lng,
@@ -546,12 +811,9 @@ $(document).ready(function(){
               name: "Line",
               desc: "",
               distance: 0,
-              completed: false,
-              path: ""
+              completed: false
             });
-            db.ref("rooms/"+room+"/objects/"+currentid+"/coords/").push({
-              set:[linelastcoord.lat,linelastcoord.lng]
-            });
+            appendCoord(currentid, linelastcoord.lat, linelastcoord.lng);
             objects.push({id:currentid, local:true, color:color, user:user.uid, name:"Line", desc:"", trigger:"", distance:0, layer:"", type:"line", session:session, completed:false});
           } else {
             // If this is not the first vertex, update hints to show total distance drawn
@@ -563,9 +825,7 @@ $(document).ready(function(){
             followcursor.setTooltipContent((linedistance/1000)+"km | Double click to finish");
 
             // Save new vertext in the database
-            db.ref("rooms/"+room+"/objects/"+currentid+"/coords/").push({
-              set:[linelastcoord.lat,linelastcoord.lng]
-            })
+            appendCoord(currentid, linelastcoord.lat, linelastcoord.lng);
           }
         }
       });
@@ -600,7 +860,7 @@ $(document).ready(function(){
         })
 
         // Update the data in the database
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           path:temppath,
           area:inst.area
         })
@@ -612,7 +872,7 @@ $(document).ready(function(){
         })
 
         // Update the data in the database
-        db.ref("rooms/"+room+"/objects/"+currentid).update({
+        updateObject(currentid, {
           path:temppath
         })
       }
@@ -644,7 +904,7 @@ $(document).ready(function(){
           // If erasing, delete the shape
           inst.trigger.remove();
           e.layer.remove();
-          db.ref("rooms/"+room+"/objects/"+inst.id).remove();
+          deleteObject(inst.id);
           objects = $.grep(objects, function(e){
                return e.id != inst.id;
           });
@@ -670,8 +930,7 @@ $(document).ready(function(){
     var line = L.polyline([[lat,lng]], {color: color});
 
     // Create a new key for the line object, and set initial data in the database
-    currentid = db.ref("rooms/"+room+"/objects").push().key;
-    db.ref("rooms/"+room+"/objects/"+currentid).set({
+    currentid = createObject({
       color: color,
       initlat: lat,
       initlng: lng,
@@ -680,9 +939,7 @@ $(document).ready(function(){
       session: session,
       completed: true
     });
-    db.ref("rooms/"+room+"/objects/"+currentid+"/coords/").push({
-      set:[lat,lng]
-    })
+    appendCoord(currentid, lat, lng);
 
     // Save an object with all the defaults
     objects.push({id:currentid, user:user.uid, line:line, session:session, local:true, completed:true, type:"draw"});
@@ -693,7 +950,7 @@ $(document).ready(function(){
       inst.line.on("click", function(event){
         if (erasing) {
           inst.line.remove();
-          db.ref("rooms/"+room+"/objects/"+inst.id).remove();
+          deleteObject(inst.id);
           objects = $.grep(objects, function(e){
                return e.id != inst.id;
           });
@@ -733,9 +990,7 @@ $(document).ready(function(){
       marker.openTooltip();
 
       // Create a new key for the marker, and add it to the database
-      currentid = db.ref("rooms/"+room+"/objects").push().key;
-      var key = currentid;
-      db.ref("rooms/"+room+"/objects/"+currentid).set({
+      currentid = createObject({
         color: color,
         lat: lat,
         lng: lng,
@@ -746,6 +1001,7 @@ $(document).ready(function(){
         name: "Marker",
         desc: ""
       });
+      var key = currentid;
       objects.push({id:currentid, user:user.uid, color:color, name:"Marker", m_type:"none",  desc:"", lat:lat, lng:lng, marker:marker, trigger:marker, session:session, completed:true, type:"marker"});
 
       // Detect when the tooltip is closed
@@ -767,7 +1023,7 @@ $(document).ready(function(){
         } else {
           // If erasing, delete the marker
           marker.remove();
-          db.ref("rooms/"+room+"/objects/"+inst.id).remove();
+          deleteObject(key);
           objects = $.grep(objects, function(e){
                return e.id != key;
           });
@@ -826,9 +1082,7 @@ $(document).ready(function(){
         })[0].line.addLatLng([lat,lng]);
 
         // Update drawn path in the database
-        db.ref("rooms/"+room+"/objects/"+currentid+"/coords/").push({
-          set:[lat,lng]
-        })
+        appendCoord(currentid, lat, lng);
       }
 
       // If drawing a line, show the distance of drawn line in the tooltip
@@ -836,19 +1090,8 @@ $(document).ready(function(){
         followcursor.setTooltipContent(((linedistance+linelastcoord.distanceTo([lat,lng]))/1000).toFixed(2)+"km | Double click to finish");
       }
       if (typeof lat != undefined && typeof lng != undefined) {
-        if (!dragging) {
-          // Save mouse coordinates in the database for real-time cursors, plus current view for observation mode
-          db.ref('rooms/'+room+'/users/'+user.uid).update({
-              lat:lat,
-              lng:lng,
-              view: [map.getBounds().getCenter().lat, map.getBounds().getCenter().lng]
-          });
-        } else {
-          // Save current view for observation mode
-          db.ref('rooms/'+room+'/users/'+user.uid).update({
-              view: [map.getBounds().getCenter().lat, map.getBounds().getCenter().lng]
-          });
-        }
+        // Save mouse coordinates for real-time cursors, plus current view for observation mode
+        sendCursor(lat, lng);
       }
     }
   });
@@ -856,8 +1099,9 @@ $(document).ready(function(){
     var user = checkAuth();
     if (checkAuth() != false) {
       // Save current view and zoom for observation mode
-      db.ref('rooms/'+room+'/users/'+user.uid).update({
-          view: [map.getBounds().getCenter().lat, map.getBounds().getCenter().lng],
+      updateUser({
+          view_lat: map.getBounds().getCenter().lat,
+          view_lng: map.getBounds().getCenter().lng,
           zoom: map.getZoom()
       });
       stopObserving();
@@ -872,84 +1116,151 @@ $(document).ready(function(){
 
   // Server code
   function checkAuth() {
-      var user = firebase.auth().currentUser;
-      if (user == null) {
-          return false;
-      } else {
-          return user;
-      }
+      return currentUser == null ? false : currentUser;
   }
 
-  // Sign in
-  function signIn() {
-    var provider = new firebase.auth.GoogleAuthProvider();
+  // Email + password authentication
+  var authMode = "signin";   // "signin" | "signup"
 
-    // Make sure the session persists after closing the window so the user doesn't have to log in every time
-    firebase.auth().setPersistence(firebase.auth.Auth.Persistence.LOCAL)
-    .then(() => {
-      // Sign in using Google
-      firebase.auth().signInWithPopup(provider).then((result) => {
-        // Check if user is inside a file
-        if (params.has('file')) {
-          $(".signin").removeClass("signin")
-          var user = result.user;
-          var usercolor = colors[Math.floor(Math.random()*colors.length)];
+  function setAuthBusy(busy) {
+    $("#auth-submit")
+      .prop("disabled", busy)
+      .toggleClass("auth-busy", busy)
+      .text(busy ? "Please wait..." : (authMode === "signup" ? "Create account" : "Sign in"));
+  }
 
-          // Get user data
-          user.providerData.forEach(profile => {
-            // Set or update user data
-            db.ref('rooms/'+room+'/users/'+user.uid).update({
-                lat:0,
-                lng:0,
-                active: true,
-                color: usercolor,
-                session: firebase.database.ServerValue.increment(1),
-                name: user.displayName,
-                imgsrc: profile.photoURL,
-                view: [map.getBounds().getCenter().lat, map.getBounds().getCenter().lng],
-                zoom: map.getZoom()
-            });
-          });
+  function showAuthMessage(message, isError) {
+    $("#auth-message")
+      .text(message || "")
+      .toggleClass("auth-error", !!isError)
+      .toggleClass("auth-ok", !isError);
+  }
 
-          // Sometimes the session doesn't set properly, might need some time for the last call to go through?
-          window.setTimeout(function(){
-            db.ref('rooms/'+room+'/users/'+user.uid).once('value').then((snapshot) => {
-              session = snapshot.val().session;
-            });
-          }, 100);
+  function setAuthMode(mode) {
+    authMode = mode === "signup" ? "signup" : "signin";
+    $("#auth-name").toggle(authMode === "signup");
+    $("#auth-password").attr("autocomplete", authMode === "signup" ? "new-password" : "current-password");
+    $("#auth-switch").html(authMode === "signup"
+      ? 'Already have an account? <span>Sign in</span>'
+      : 'New here? <span>Create an account</span>');
+    showAuthMessage("");
+    setAuthBusy(false);
+  }
 
-          // Get data from database
-          checkData();
-        } else {
-          // Prompt the user with a popup to create a map
-          $("#popup").find(".header-text").html("Create a map");
-          $("#popup").find(".subheader-text").html("Maps can be shared with friends to collaborate in real-time.");
-          $("#google-signin").attr("id", "create-map");
-          $("#create-map").html("Create a map");
+  function toggleAuthMode() {
+    setAuthMode(authMode === "signup" ? "signin" : "signup");
+  }
+
+  function showSignInState() {
+    $("#popup").find(".header-text").html("Welcome to Mapus!");
+    $("#popup").find(".subheader-text").html("Sign in with your email, or create an account.");
+    $("#create-map").hide();
+    $("#auth-form").show();
+    $("#auth-switch").show();
+    setAuthMode("signin");
+  }
+
+  function showSignedInState() {
+    $("#popup").find(".header-text").html("Create a map");
+    $("#popup").find(".subheader-text").html("Maps can be shared with friends to collaborate in real-time.");
+    $("#auth-form").hide();
+    $("#auth-switch").hide();
+    showAuthMessage("");
+    $("#create-map").show();
+  }
+
+  function authErrorMessage(err) {
+    var msg = (err && err.message) || "Something went wrong.";
+    if (/invalid login credentials/i.test(msg)) return "Wrong email or password.";
+    if (/email not confirmed/i.test(msg)) return "Confirm your email first - check your inbox.";
+    if (/user already registered/i.test(msg)) return "That email is already registered. Sign in instead.";
+    if (/password should be at least/i.test(msg)) return "Passwords need at least 6 characters.";
+    if (/rate limit|too many requests/i.test(msg)) return "Too many attempts, wait a minute and try again.";
+    return msg;
+  }
+
+  async function submitAuth(e) {
+    e.preventDefault();
+    // String.prototype.trim, not $.trim: the latter is gone in jQuery 4
+    var email = String($("#auth-email").val() || "").trim();
+    var password = $("#auth-password").val();
+    var displayName = String($("#auth-name").val() || "").trim();
+
+    if (!email) return showAuthMessage("Enter your email address.", true);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showAuthMessage("That email address doesn't look right.", true);
+    if (!password) return showAuthMessage("Enter a password.", true);
+    if (password.length < 6) return showAuthMessage("Passwords need at least 6 characters.", true);
+    if (authMode === "signup" && !displayName) return showAuthMessage("Enter a display name.", true);
+
+    setAuthBusy(true);
+    showAuthMessage("");
+
+    try {
+      if (authMode === "signup") {
+        var signUpRes = await supabaseClient.auth.signUp({
+          email: email,
+          password: password,
+          options: {
+            data: { full_name: displayName },
+            emailRedirectTo: window.location.origin + window.location.pathname + window.location.search
+          }
+        });
+        if (signUpRes.error) throw signUpRes.error;
+
+        if (!signUpRes.data.session) {
+          // "Confirm email" is enabled in the project: no session until the link is clicked
+          $("#auth-password").val("");
+          setAuthMode("signin");
+          return showAuthMessage("Almost there - check " + email + " for a confirmation link.", false);
         }
-      });
-    });
+        currentUser = normalizeUser(signUpRes.data.session.user);
+      } else {
+        var signInRes = await supabaseClient.auth.signInWithPassword({ email: email, password: password });
+        if (signInRes.error) throw signInRes.error;
+        currentUser = normalizeUser(signInRes.data.user);
+      }
+
+      $("#auth-password").val("");
+
+      // Inside a map, load it; otherwise offer to create one
+      if (params.has("file")) {
+        if (!dataLoaded) checkData();
+      } else {
+        showSignedInState();
+      }
+    } catch (err) {
+      showAuthMessage(authErrorMessage(err), true);
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
   // Log out
   function logOut() {
-    firebase.auth().signOut().then(function() {
-      $("#popup").addClass("signin");
-      $("#overlay").addClass("signin");
+    if (room && currentUser) {
+      // Best effort: mark the user offline before tearing the session down
+      supabaseClient.from("room_users").update({ active: false })
+        .eq("room_id", room).eq("user_id", currentUser.uid).then(logResult);
+    }
+    supabaseClient.auth.signOut().then(function() {
+      // Reload so the next sign-in starts from a clean slate (subscriptions, cached room data)
+      window.location.reload();
     });
   }
 
   // Create a map
-  function createMap() {
-    var user = checkAuth();
-    if (checkAuth() != false) {
-      var key = db.ref('rooms').push().key;
-      db.ref("rooms/"+key+"/details").set({
-        name: "New map",
-        description: "Map description"
-      });
-      window.location.replace(window.location.href+"?file="+key);
-    }
+  async function createMap() {
+    if (checkAuth() == false) return;
+    var res = await supabaseClient.from("rooms").insert({
+      name: "New map",
+      description: "Map description",
+      created_by: currentUser.uid
+    }).select("id").single();
+    if (res.error) return console.error("[supabase]", res.error.message);
+
+    var url = new URL(window.location.href);
+    url.searchParams.set("file", res.data.id);
+    window.location.replace(url.toString());
   }
 
   // Collapse/expand objects in the sidebar
@@ -971,6 +1282,7 @@ $(document).ready(function(){
     if (!$(this).find(".annotation-name span").hasClass("annotation-focus")) {
       const id = $(this).attr("data-id");
       const inst = objects.find(x => x.id === id);
+      if (!inst) return;
 
       // De-select any previously selected objects
       $(".annotation-focus").removeClass("annotation-focus");
@@ -996,6 +1308,14 @@ $(document).ready(function(){
         inst.marker.openTooltip();
       }
     }
+  }
+
+  // Opening a shared map: jump to the first annotation in the list instead of leaving
+  // the view on the default map centre. Same effect as clicking that item by hand.
+  function focusFirstAnnotation() {
+    var $first = $("#annotations-list .annotation-item").first();
+    if (!$first.length) return;
+    $first.trigger("click");
   }
 
   // Render object in the sidebar
@@ -1038,17 +1358,20 @@ $(document).ready(function(){
     e.stopPropagation();
     const id = $(this).parent().parent().attr("data-id");
     const inst = objects.find(x => x.id === id);
+    if (!inst) return;
     $(".annotation-item[data-id='"+id+"']").remove();
     if (inst.type != "marker") {
-      inst.trigger.remove();
-      inst.line.remove();
-      db.ref("rooms/"+room+"/objects/"+inst.id).remove();
+      if (inst.trigger) inst.trigger.remove();
+      // Locally drawn lines/areas live on the Geoman layer, not on inst.line
+      if (inst.line) inst.line.remove();
+      else if (inst.layer) inst.layer.remove();
+      deleteObject(inst.id);
       objects = $.grep(objects, function(e){
            return e.id != inst.id;
       });
     } else {
-      inst.marker.remove();
-      db.ref("rooms/"+room+"/objects/"+inst.id).remove();
+      if (inst.marker) inst.marker.remove();
+      deleteObject(inst.id);
       objects = $.grep(objects, function(e){
            return e.id != inst.id;
       });
@@ -1056,18 +1379,12 @@ $(document).ready(function(){
   }
 
   // Editing the name of the map
-  function editMapName(e) {
-    if (e.which != 3) {
-      return;
-    }
-    var user = checkAuth();
-    if (checkAuth() != false) {
-      if (!editingname) {
-        oldname = mapname;
-        editingname = true;
-        $("#map-name").prop("disabled", false);
-        $("#map-name").addClass("map-editing");
-      }
+  function editMapName() {
+    if (checkAuth() == false) return;
+    if (!editingname) {
+      oldname = mapname;
+      editingname = true;
+      $("#map-name").addClass("map-editing");
     }
   }
   function focusMapName() {
@@ -1075,34 +1392,29 @@ $(document).ready(function(){
     $("#map-name").addClass("map-editing");
   }
   function stopEditingMapName() {
-    var user = checkAuth();
-    if (checkAuth() != false) {
-      editingname = false;
-      $("#map-name").prop("disabled", true);
-      $("#map-name").removeClass("map-editing");
-      var name = sanitize($("#map-name").val());
-      if (name.length == 0) {
-        // Revert to the old name if its length is 0
-        $("#map-name").val(oldname);
-      } else {
-        // Otherwise, update the name in the database
-        db.ref("rooms/"+room+"/details").update({
-          name: name
-        })
-      }
+    if (checkAuth() == false) return;
+    editingname = false;
+    $("#map-name").removeClass("map-editing");
+    var name = sanitize($("#map-name").val());
+    if (name.length == 0) {
+      // Revert to the old name if its length is 0
+      $("#map-name").val(oldname);
+    } else if (name !== oldname) {
+      // Only write when it actually changed
+      updateRoom({ name: name });
+      oldname = name;
+      mapname = name;
+      $("#share-nav span").html("Share "+mapname);
     }
   }
 
   // Editing the description of the map
   function editMapDescription() {
-    var user = checkAuth();
-    if (checkAuth() != false) {
-      if (!editingdescription) {
-        olddescription = mapdescription;
-        editingdescription = true;
-        $("#map-description").prop("disabled", false);
-        $("#map-description").addClass("map-editing");
-      }
+    if (checkAuth() == false) return;
+    if (!editingdescription) {
+      olddescription = mapdescription;
+      editingdescription = true;
+      $("#map-description").addClass("map-editing");
     }
   }
   function focusMapDescription() {
@@ -1110,21 +1422,16 @@ $(document).ready(function(){
     $("#map-description").addClass("map-editing");
   }
   function stopEditingMapDescription() {
-    var user = checkAuth();
-    if (checkAuth() != false) {
-      editingdescription = false;
-      $("#map-description").prop("disabled", true);
-      $("#map-description").removeClass("map-editing");
-      var name = sanitize($("#map-description").val());
-      if (name.length == 0) {
-        // Revert to the old description if its length is 0
-        $("#map-description").val(olddescription);
-      } else {
-        // Otherwise, update the description in the database
-        db.ref("rooms/"+room+"/details").update({
-          description: name
-        })
-      }
+    if (checkAuth() == false) return;
+    editingdescription = false;
+    $("#map-description").removeClass("map-editing");
+    var name = sanitize($("#map-description").val());
+    if (name.length == 0) {
+      // Revert to the old description if its length is 0
+      $("#map-description").val(olddescription);
+    } else if (name !== olddescription) {
+      updateRoom({ description: name });
+      olddescription = name;
     }
   }
 
@@ -1190,6 +1497,10 @@ $(document).ready(function(){
     if ($("#more-menu").hasClass("menu-show") && $(e.target).attr("id") != "more-vertical" && $(e.target).parent().attr("id") != "more-vertical") {
       $("#more-menu").removeClass("menu-show");
     }
+    // Close the colour swatches when clicking anywhere outside the picker
+    if ($("#color-list").hasClass("color-enabled") && $(e.target).closest("#color-picker").length == 0) {
+      $("#color-list").removeClass("color-enabled");
+    }
   }
 
   // Export GeoJSON
@@ -1247,8 +1558,10 @@ $(document).ready(function(){
             cursors.find(x => x.id === key).cursor.setLatLng([snapshot.lat, snapshot.lng]);
             // Observation mode
             if (observing.status == true && key == observing.id) {
-              map.setZoom(snapshot.zoom);
-              map.panTo(new L.LatLng(snapshot.view[0], snapshot.view[1]));
+              if (snapshot.zoom != null) map.setZoom(snapshot.zoom);
+              if (snapshot.view_lat != null && snapshot.view_lng != null) {
+                map.panTo(new L.LatLng(snapshot.view_lat, snapshot.view_lng));
+              }
             }
           }
         } else if (!snapshot.active && cursors.find(x => x.id === key)) {
@@ -1318,7 +1631,7 @@ $(document).ready(function(){
             // If erasing, delete the shape
             inst.trigger.remove();
             inst.line.remove();
-            db.ref("rooms/"+room+"/objects/"+inst.id).remove();
+            deleteObject(inst.id);
             objects = $.grep(objects, function(e){
                  return e.id != inst.id;
             });
@@ -1347,7 +1660,12 @@ $(document).ready(function(){
           return result.id === key && result.user === snapshot.user
         }).length == 0) {
           // If the shape doesn't exist locally, create it
-          var line = L.polyline([[snapshot.initlat, snapshot.initlng]], {color: snapshot.color});
+          // (fall back to the first stored coordinate if the row has no seed point)
+          var seed = [snapshot.initlat, snapshot.initlng];
+          if ((seed[0] == null || seed[1] == null) && snapshot.coords && snapshot.coords[0]) {
+            seed = snapshot.coords[0].set;
+          }
+          var line = L.polyline([seed], {color: snapshot.color});
           if (snapshot.completed && (snapshot.type == "line" || snapshot.type == "area")) {
             // If the shape is already finished, give it all its coordinates
             line = L.polyline(snapshot.path, {color:snapshot.color});
@@ -1366,7 +1684,7 @@ $(document).ready(function(){
             if (snapshot.completed && snapshot.type == "draw" && erasing) {
               // If erasing, delete the line
               line.remove();
-              db.ref("rooms/"+room+"/objects/"+key).remove();
+              deleteObject(key);
               objects = $.grep(objects, function(e){
                    return e.id != key;
               });
@@ -1389,12 +1707,14 @@ $(document).ready(function(){
         } else {
           // If the object already exists (drawing in progress or already completed), update the coordinates of the object
           var coords = [];
-          Object.values(snapshot.coords).forEach(function(coord){
+          Object.values(snapshot.coords || {}).forEach(function(coord){
             coords.push([coord.set[0], coord.set[1]]);
           });
-          objects.filter(function(result){
+          var local = objects.filter(function(result){
             return result.id === key && result.user === snapshot.user
-          })[0].line.setLatLngs(coords);
+          })[0];
+          // Never blank out a shape because a payload arrived without coordinates
+          if (coords.length > 0) local.line.setLatLngs(coords);
         }
       } else if (snapshot.type == "marker") {
         if (objects.filter(function(result){
@@ -1440,7 +1760,7 @@ $(document).ready(function(){
             } else {
               // If erasing, delete the marker
               marker.remove();
-              db.ref("rooms/"+room+"/objects/"+key).remove();
+              deleteObject(key);
               objects = $.grep(objects, function(e){
                    return e.id != key;
               });
@@ -1459,8 +1779,8 @@ $(document).ready(function(){
           renderObjectLayer(objects.find(x => x.id == key));
         } else {
           // If the marker already exists locally, just update its info in the sidebar list
-          renderObjectLayer(objects.filter(function(result){
-            return result.id === key && result.user === snapshot.user
+          renderObjectLayer(objects.find(function(result){
+            return result.id === key && result.user === snapshot.user;
           }));
         }
       }
@@ -1496,108 +1816,189 @@ $(document).ready(function(){
           return result.id === key && result.user === snapshot.user
         }).length > 0) {
           var coords = [];
-          Object.values(snapshot.coords).forEach(function(coord){
+          Object.values(snapshot.coords || {}).forEach(function(coord){
             coords.push([coord.set[0], coord.set[1]]);
           });
-          objects.filter(function(result){
-            return result.id === key && result.user === snapshot.user
-          })[0].line.setLatLngs(coords);
+          if (coords.length > 0) {
+            objects.filter(function(result){
+              return result.id === key && result.user === snapshot.user
+            })[0].line.setLatLngs(coords);
+          }
         }
       }
     }
   }
 
-  // Interact with the database
-  function checkData() {
-    var user = checkAuth();
-    if (checkAuth() != false) {
-
-      // Get name and description of map on startup
-      db.ref("rooms/"+room+"/details").once('value', (snapshot) => {
-        mapname = snapshot.val().name;
-        mapdescription = snapshot.val().description;
-        $("#map-name").val(mapname);
-        $("#map-description").val(mapdescription);
-        $("#share-nav span").html("Share "+mapname);
-      });
-
-      // Check current users on startup
-      db.ref("rooms/"+room+"/users/").once('value', (snapshot) => {
-        if (snapshot.val() != null) {
-          Object.values(snapshot.val()).forEach(function(cursor, index){
-            renderCursors(cursor, Object.keys(snapshot.val())[index]);
-          })
-        }
-      });
-
-      // Check current objects on startup
-      db.ref("rooms/"+room+"/objects").once('value', (snapshot) => {
-        if (snapshot.val() != null) {
-          Object.values(snapshot.val()).forEach(function(object, index){
-            renderShape(object, Object.keys(snapshot.val())[index]);
-          });
-        }
-      });
-
-      // Update name and description when a change is detected
-      db.ref("rooms/"+room+"/details").on('value', (snapshot) => {
-        mapname = snapshot.val().name;
-        mapdescription = snapshot.val().description;
-        $("#map-name").val(mapname);
-        $("#map-description").val(mapdescription);
-      });
-
-      // Detect when a user joins the room
-      db.ref("rooms/"+room+"/users/").on('child_added', (snapshot) => {
-        renderCursors(snapshot.val(), snapshot.key);
-      });
-
-      // Detect when a user moves their cursor or interacts with the map
-      db.ref("rooms/"+room+"/users/").on('child_changed', (snapshot) => {
-        renderCursors(snapshot.val(), snapshot.key);
-      });
-
-      // Detect when new objects are added or modified
-      db.ref("rooms/"+room+"/objects").on('value', (snapshot) => {
-        if (snapshot.val() != null) {
-          // Check for deleted objects
-          objects.forEach(function(inst){
-            if (inst.completed) {
-              if ($.inArray(inst.id, Object.keys(snapshot.val())) == -1) {
-                if (inst.type == "draw") {
-                  inst.line.remove();
-                } else if (inst.type == "marker") {
-                  inst.marker.remove();
-                  $(".annotation-item[data-id='"+inst.id+"']").remove();
-                } else {
-                  inst.trigger.remove();
-                  if (!inst.local) {
-                    inst.line.remove();
-                  } else {
-                    inst.layer.remove();
-                  }
-                  $(".annotation-item[data-id='"+inst.id+"']").remove();
-                }
-                objects = $.grep(objects, function(e){
-                  return e.id != inst.id;
-                });
-              }
-            }
-          });
-          // Check for new or modified objects
-          Object.values(snapshot.val()).forEach(function(object, index){
-            if (object.user != user.uid || object.session != session) {
-              renderShape(object, Object.keys(snapshot.val())[index]);
-              updateShapeCoords(object,  Object.keys(snapshot.val())[index]);
-            }
-          })
-        }
-      });
-      // Update user status when disconnected
-      db.ref("rooms/"+room+"/users/"+user.uid).onDisconnect().update({
-        active: false
-      })
+  // A room_users row arrived (initial load or realtime change)
+  function handleUserRow(row) {
+    if (!row) return;
+    userCache[row.user_id] = row;
+    // Presence decides who is really online; until it has synced, render optimistically
+    if (!onlineIds || onlineIds[row.user_id]) {
+      renderCursors(Object.assign({}, row, { active: true }), row.user_id);
     }
+  }
+
+  // Reconcile the cursors on screen with who is actually connected
+  function syncOnlineCursors() {
+    Object.keys(userCache).forEach(function(uid){
+      if (onlineIds[uid]) {
+        handleUserRow(userCache[uid]);
+      } else if (cursors.find(x => x.id === uid)) {
+        renderCursors({ active: false }, uid);
+      }
+    });
+  }
+
+  // Realtime Presence replaces Firebase's onDisconnect(): socket closes are detected
+  // by the server, so cursors disappear immediately instead of after a timeout.
+  function subscribePresence() {
+    presenceChannel = supabaseClient.channel("room-presence:" + room, {
+      config: { presence: { key: currentUser.uid } }
+    });
+
+    presenceChannel.on("presence", { event: "sync" }, function(){
+      var state = presenceChannel.presenceState();
+      onlineIds = {};
+      Object.keys(state).forEach(function(uid){ onlineIds[uid] = true; });
+      syncOnlineCursors();
+    });
+
+    presenceChannel.on("presence", { event: "leave" }, function(payload){
+      if (payload && payload.key && payload.key !== currentUser.uid) {
+        renderCursors({ active: false }, payload.key);
+      }
+    });
+
+    presenceChannel.subscribe(function(status){
+      if (status === "SUBSCRIBED") {
+        presenceChannel.track({ online_at: new Date().toISOString() });
+      }
+    });
+  }
+
+  // Remove an annotation locally (it was deleted by someone else, or by another tab)
+  function removeObjectLocally(id) {
+    if (!id) return;
+    var inst = objects.find(function(x){ return x.id === id; });
+    if (!inst) return;
+
+    if (inst.type == "draw") {
+      inst.line.remove();
+    } else if (inst.type == "marker") {
+      if (inst.marker) inst.marker.remove();
+    } else {
+      if (inst.trigger) inst.trigger.remove();
+      if (inst.local) {
+        if (inst.layer) inst.layer.remove();
+      } else if (inst.line) {
+        inst.line.remove();
+      }
+    }
+    $(".annotation-item[data-id='"+id+"']").remove();
+    objects = $.grep(objects, function(e){ return e.id != id; });
+  }
+
+  // Realtime subscriptions for one room (replaces Firebase's .on('value' / 'child_*'))
+  function subscribeRoom() {
+    supabaseClient.channel("room-db:" + room)
+      .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: "id=eq." + room }, function(payload){
+        if (payload.eventType === "DELETE") return;
+        var row = payload.new;
+        mapname = row.name || "";
+        mapdescription = row.description || "";
+        if (!editingname) $("#map-name").val(mapname);
+        if (!editingdescription) $("#map-description").val(mapdescription);
+        $("#share-nav span").html("Share "+mapname);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "room_users", filter: "room_id=eq." + room }, function(payload){
+        if (payload.eventType === "DELETE") {
+          if (payload.old && payload.old.user_id) {
+            delete userCache[payload.old.user_id];
+            renderCursors({ active: false }, payload.old.user_id);
+          }
+          return;
+        }
+        handleUserRow(payload.new);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "room_objects", filter: "room_id=eq." + room }, function(payload){
+        if (payload.eventType === "DELETE") {
+          removeObjectLocally(payload.old && payload.old.id);
+          return;
+        }
+        var row = shapeFromRow(payload.new);
+        // Our own edits are already applied locally, but another tab of the same user is not
+        if (row.user_id === currentUser.uid && row.session === session) return;
+        try {
+          renderShape(row, row.id);
+          if (payload.eventType === "UPDATE") updateShapeCoords(row, row.id);
+        } catch (err) {
+          console.error("[supabase] realtime shape:", err.message);
+        }
+      })
+      .subscribe(function(status, err){
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.error("[supabase] realtime:", status, err && err.message);
+        }
+      });
+  }
+
+  // Interact with the database
+  async function checkData() {
+    if (checkAuth() == false || dataLoaded) return;
+    dataLoaded = true;
+
+    // Register this user in the room: creates the row on first visit and bumps the
+    // per-visit session counter (used to tell our own edits apart from other tabs).
+    var joined = await supabaseClient.rpc("join_room", {
+      p_room_id: room,
+      p_name: currentUser.displayName,
+      p_imgsrc: currentUser.photoURL,
+      p_color: colors[Math.floor(Math.random()*colors.length)],
+      p_view_lat: map.getBounds().getCenter().lat,
+      p_view_lng: map.getBounds().getCenter().lng,
+      p_zoom: map.getZoom()
+    });
+    if (joined.error) {
+      dataLoaded = false;
+      return console.error("[supabase] join_room:", joined.error.message);
+    }
+    session = joined.data;
+    $(".signin").removeClass("signin");
+
+    // Get name and description of the map on startup
+    var details = await supabaseClient.from("rooms").select("name,description").eq("id", room).single();
+    if (details.error) console.error("[supabase] room:", details.error.message);
+    if (details.data) {
+      mapname = details.data.name || "";
+      mapdescription = details.data.description || "";
+      $("#map-name").val(mapname);
+      $("#map-description").val(mapdescription);
+      $("#share-nav span").html("Share "+mapname);
+    }
+
+    // Users already in the room
+    var users = await supabaseClient.from("room_users").select("*").eq("room_id", room);
+    if (users.error) console.error("[supabase] room_users:", users.error.message);
+    (users.data || []).forEach(function(row){
+      try { handleUserRow(row); } catch (err) { console.error("[supabase] cursor:", err.message); }
+    });
+
+    // Annotations already on the map. Ordered oldest-first so that the sidebar
+    // (which .prepend()s each row) keeps showing the newest annotation on top.
+    var objs = await supabaseClient.from("room_objects").select("*").eq("room_id", room)
+      .order("created_at", { ascending: true });
+    if (objs.error) console.error("[supabase] room_objects:", objs.error.message);
+    (objs.data || []).forEach(function(row){
+      // One malformed row should never stop the rest of the map from loading
+      try { renderShape(shapeFromRow(row), row.id); } catch (err) { console.error("[supabase] shape:", err.message); }
+    });
+
+    // Opening a shared link: focus the first annotation instead of the default view
+    focusFirstAnnotation();
+
+    subscribePresence();
+    subscribeRoom();
   }
 
   // Keyboard shortcuts & more
@@ -1625,6 +2026,17 @@ $(document).ready(function(){
       pathTool();
     } else if (e.which == 65) {
       areaTool();
+    }
+  });
+
+  // Leave the room cleanly when the tab closes/refreshes.
+  // Realtime Presence handles abrupt disconnects on its own; this is the best-effort path.
+  window.addEventListener("pagehide", function(){
+    Object.keys(coordBuffers).forEach(function(id){ flushCoords(id); });
+    if (presenceChannel) presenceChannel.untrack();
+    if (room && currentUser) {
+      supabaseClient.from("room_users").update({ active: false })
+        .eq("room_id", room).eq("user_id", currentUser.uid).then(logResult);
     }
   });
 
@@ -1660,7 +2072,8 @@ $(document).ready(function(){
   $(document).on("click", "#more-vertical", toggleMoreMenu);
   $(document).on("click", "#geojson", exportGeoJSON);
   $(document).on("click", "#search-box img", search);
-  $(document).on("click", "#google-signin", signIn);
+  $(document).on("submit", "#auth-form", submitAuth);
+  $(document).on("click", "#auth-switch span", toggleAuthMode);
   $(document).on("click", "#create-map", createMap);
   $(document).on("click", "#logout", logOut);
   $(document).on("click", "#share-button", showSharePopup);
