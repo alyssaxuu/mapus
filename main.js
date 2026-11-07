@@ -134,6 +134,8 @@ $(document).ready(function(){
     }
   }
 
+  var coordRpcWarned = false;
+
   function flushCoords(id) {
     if (coordTimers[id]) { window.clearTimeout(coordTimers[id]); coordTimers[id] = null; }
     var buf = coordBuffers[id] || [];
@@ -141,7 +143,17 @@ $(document).ready(function(){
     if (!buf.length) return;
     var payload = buf.map(function(p){ return { set: p }; });
     queueObjectWrite(id, function(){
-      return supabaseClient.rpc("append_coords", { p_object_id: id, p_coords: payload }).then(logResult);
+      return supabaseClient.rpc("append_coords", { p_object_id: id, p_coords: payload }).then(function(res){
+        // A missing function or an RLS rejection here means strokes are drawn but never
+        // saved. Say that out loud instead of printing a generic error nobody looks at.
+        if (res && res.error && !coordRpcWarned) {
+          coordRpcWarned = true;
+          console.error("[supabase] append_coords failed, drawn paths will not persist. " +
+            "If the message says \"Could not find the function\", re-run supabase/schema.sql " +
+            "in the Supabase SQL editor —", res.error.message || res.error);
+        }
+        return res;
+      });
     });
   }
 
@@ -256,7 +268,7 @@ $(document).ready(function(){
     //    shifts the whole map by one zoom level.
     // @2x turns those 512 CSS px into a 1024px image, which stays sharp on retina;
     // drop the @2x to cut tile weight from ~240KB to ~80KB if bandwidth matters more.
-    L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/512/{z}/{x}/{y}@2x?access_token=your-api-key', {
+    L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/512/{z}/{x}/{y}@2x?access_token=your-apikey', {
       id: "mapbox/streets-v12",
       tileSize: 512,
       zoomOffset: -1,
@@ -942,29 +954,29 @@ $(document).ready(function(){
     appendCoord(currentid, lat, lng);
 
     // Save an object with all the defaults
-    objects.push({id:currentid, user:user.uid, line:line, session:session, local:true, completed:true, type:"draw"});
+    var inst = {id:currentid, user:user.uid, line:line, session:session, local:true, completed:true, type:"draw"};
+    objects.push(inst);
     line.addTo(map);
 
-    // Event handling for lines
-    objects.forEach(function(inst){
-      inst.line.on("click", function(event){
-        if (erasing) {
-          inst.line.remove();
-          deleteObject(inst.id);
-          objects = $.grep(objects, function(e){
-               return e.id != inst.id;
-          });
-          $(".annotation-item[data-id='"+inst.id+"']").remove();
-        }
-      });
-      inst.line.on("mouseover", function(event){
-        if (erasing) {
-          inst.line.setStyle({opacity: .3});
-        }
-      });
-      inst.line.on("mouseout", function(event){
-        inst.line.setStyle({opacity: 1});
-      });
+    // Event handling for this stroke only. Binding to every object again on each new
+    // stroke stacked duplicate handlers, so one eraser click fired N deletes.
+    line.on("click", function(event){
+      if (erasing) {
+        line.remove();
+        deleteObject(inst.id);
+        objects = $.grep(objects, function(e){
+             return e.id != inst.id;
+        });
+        $(".annotation-item[data-id='"+inst.id+"']").remove();
+      }
+    });
+    line.on("mouseover", function(event){
+      if (erasing) {
+        line.setStyle({opacity: .3});
+      }
+    });
+    line.on("mouseout", function(event){
+      line.setStyle({opacity: 1});
     });
   }
 
@@ -1056,10 +1068,8 @@ $(document).ready(function(){
       cursorcoords = [lat,lng];
       // Create a marker if the marker tool is enabled
       createMarker(lat,lng,user);
-      if (drawing) {
-        // If the pencil tool is enabled, start drawing
-        startDrawing(lat,lng,user);
-      }
+      // The pencil tool starts a stroke on mousedown; running startDrawing() here as
+      // well left a stray one-point object behind after every stroke.
     }
   });
   map.addEventListener('mouseup', (event) => {
@@ -1991,7 +2001,16 @@ $(document).ready(function(){
     if (objs.error) console.error("[supabase] room_objects:", objs.error.message);
     (objs.data || []).forEach(function(row){
       // One malformed row should never stop the rest of the map from loading
-      try { renderShape(shapeFromRow(row), row.id); } catch (err) { console.error("[supabase] shape:", err.message); }
+      try {
+        var shape = shapeFromRow(row);
+        renderShape(shape, row.id);
+        // Freehand strokes keep their whole path in `coords` (they never get a `path`
+        // column), and renderShape only seeds them with a single point. Without this
+        // every saved stroke came back as an invisible one-pixel dot after a reload.
+        if ((!shape.path || !shape.path.length) && shape.coords && shape.coords.length) {
+          updateShapeCoords(shape, row.id);
+        }
+      } catch (err) { console.error("[supabase] shape:", err.message); }
     });
 
     // Opening a shared link: focus the first annotation instead of the default view
