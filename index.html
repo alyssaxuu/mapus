@@ -1,10 +1,15 @@
 <!DOCTYPE html>
-<html>
+<html lang="en-US">
 <head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Mapus - Share your cool map</title>
+  <meta name="description" content="Share your cool map" />
+  <link rel="icon" href="https://makeart.uk/favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css"/>
   <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
 </head>
@@ -19,8 +24,16 @@
   </div>
   <div id="popup">
     <div class="header-text">Welcome to Mapus!</div>
-    <div class="subheader-text">To get started, click below to sign in with Google.</div>
-    <div id="google-signin"><img src="assets/google-logo.svg"> Sign in with Google</div>
+    <div class="subheader-text">Sign in with your email, or create an account.</div>
+    <form id="auth-form" novalidate>
+      <input id="auth-name" type="text" placeholder="Display name" autocomplete="nickname" maxlength="40">
+      <input id="auth-email" type="email" placeholder="Email" autocomplete="email" maxlength="254">
+      <input id="auth-password" type="password" placeholder="Password" autocomplete="current-password" maxlength="72">
+      <button id="auth-submit" type="submit">Sign in</button>
+    </form>
+    <div id="auth-switch">New here? <span>Create an account</span></div>
+    <div id="auth-message"></div>
+    <div id="create-map">Create a map</div>
   </div>
   <div id="overlay"></div>
   <div id="more-menu">
@@ -30,7 +43,7 @@
   </div>
   <div id="sidebar">
     <div id="map-details" class="section">
-      <input id="map-name" value="Cool map 👻" disabled>
+      <input id="map-name" value="Cool map 👻">
       <input id="map-description" value="Let's all collaborate here">
       <div id="more-vertical">
         <img src="assets/more-vertical.svg">
@@ -87,7 +100,7 @@
     </div>
     <div class="section" id="attribution-section">
       <div class="section-name">Made by Alyssa X</div>
-      <div id="attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>
+      <!--<div id="attribution">&copy; <a href="https://www.mapbox.com/about/maps/" target="_blank">Mapbox</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>-->
     </div>
   </div>
   <div id="search-box">
@@ -141,30 +154,22 @@
     <div id="observing-name"></div>
   </div>
   <div id="mapDiv"></div>
-  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-analytics.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.2.8/firebase-auth.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.2.8/firebase-storage.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-firestore.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-database.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
   <script>
-    // Your web app's Firebase configuration
-    var firebaseConfig = {
-      apiKey: "YOUR_API_KEY",
-      authDomain: "DOMAIN.firebaseapp.com",
-      projectId: "PROJECT_ID",
-      databaseURL: "DB_URL.firebaseio.com",
-      storageBucket: "DOMAIN.appspot.com",
-      messagingSenderId: "ID",
-      appId: "APP_ID"
-    };
-    // Initialize Firebase
-    firebase.initializeApp(firebaseConfig);
-    firebase.analytics();
+    // Your Supabase project configuration
+    // - Project URL + anon/publishable key: Dashboard -> Project Settings -> API
+    // - Sign-in: Authentication -> Sign In / Providers -> Email (on by default).
+    //   Turn "Confirm email" off if people should be able to use their account
+    //   right after signing up; otherwise they must click the link in the email
+    //   first (the link brings them back to this page).
+    var SUPABASE_URL = "https://xzslqqgapsekkwowqawn.supabase.co/";
+    var SUPABASE_ANON_KEY = "sb_publishable_pRMFnojpuJ4Zh6NXJiWhXA_IOmvB2AN";
+    var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   </script>
-  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/jquery@4.0.0/dist/jquery.min.js"></script>
   <script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script>
-  <script src="leaflet.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
   <script src="main.js"></script>
 </body>

@@ -41,11 +41,11 @@ Since real-time multiplayer can get expensive (even though Firebase has a pretty
 
 1. Download the code. In the web version of GitHub, you can do that by clicking the green "Code" button, and then "Download ZIP". You'll be using the src folder.
 2. Create a Firebase account and project. You can check out the [docs](https://firebase.google.com/docs/web/setup?authuser=0) to see how to get started.
-3. Create a Realtime Database. You may need to set up specific rules to keep the data safe, [here's](https://firebase.google.com/docs/database/security?authuser=0) an overview. The default rules though will work fine for testing and development, just not for production.
-4. Enable Google Sign In in the Firebase console. [Here's how](https://firebase.google.com/docs/auth/web/google-signin?authuser=0).
-5. Replace the Firebase config object in the [index.html](https://github.com/alyssaxuu/mapus/blob/8d8d914f97fac60d9e60e1978b8b064c0d888ef6/src/index.html#L152) file with your own. The [docs](https://firebase.google.com/docs/web/setup?authuser=0#config-object) explain how to get the object.
-6. In order for the authentication to work, you need to run Mapus in a server. [Here's](https://stackoverflow.com/questions/38497334/how-to-run-html-file-on-localhost) a few ways to do it in localhost. Then go to the Firebase console, click on "Authenthication" in the sidebar, then on the "Sign-in method" tab and add your domain (or localhost) in the authorized domains list.
-7. At this point you could just use the tool as is, but if you want to make sure you don't go over the Firebase free plan limits, you could set up the [Firebase Emulator](https://firebase.google.com/docs/emulator-suite/install_and_configure?authuser=0) and run everything locally 100% for free.
+3. Create a Realtime Database. You may need to set up specific rules to keep the data safe, [here's](https://supabase.com/dashboard/new) an overview. The default rules though will work fine for testing and development, just not for production.
+4. Enable Email account Sign In in the supabase console.
+Authentication->Sign In / Providers->Auth Providers->Email(check the Secure email change)
+5. In supabase dashboard, Use `SQL Editor` to import the sql initial file(/supabase/schema.sql)
+6. Edit your mapbox api key in `L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/512/{z}/{x}/{y}@2x?access_token=your-api-key', {`
 
 Note that since Mapus has a MIT License you are free to set it up in a domain or even commercialize it.
 
@@ -76,7 +76,7 @@ Throughout the development of Mapus I've had several ideas in regards to additio
 - [Leaflet](https://leafletjs.com/) -  for the interactive map
 - [Leaflet Geoman](https://geoman.io/leaflet-geoman) -  for drawing lines and polygons on top of the map
 - [Turf](https://turfjs.org/) -  for calculating areas and distances
-- [Firebase](https://firebase.google.com/) -  for the database
+- [Supabase](https://supabase.com/) -  for the database
 - [OpenStreetMap](https://www.openstreetmap.org/) - for the Nominatim API to search for places
 - [MapBox](https://www.mapbox.com/) - for the tile seen in the GIF. The current version uses an OSM tile because it's free
 

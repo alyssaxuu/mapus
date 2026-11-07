@@ -1,0 +1,1379 @@
+/* ============================================================
+   Mapus — Liquid Glass theme
+   Layer model (Apple HIG › Materials › Liquid Glass):
+     · content layer  = the map and the annotation data on it
+     · functional layer = sidebar, toolbars, controls, popovers
+   Glass lives only on the functional layer.
+   ============================================================ */
+
+:root {
+  color-scheme: light;                 /* the basemap is light, so is the chrome */
+
+  /* type */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
+
+  /* content colours (≥ 4.5:1 on the glass fills below) */
+  --text-black: #1C1C1E;               /* 14.8:1 on glass */
+  --text-grey: #5C6169;                /*  5.4:1 on glass */
+  --text-tertiary: #636A74;            /*  4.7:1 on glass */
+
+  /* accent — one prominent action per view */
+  --accent: #0A6CFF;                   /* white text on it: 4.56:1 */
+  --accent-press: #0057D6;
+
+  /* glass materials */
+  --glass-blur: blur(24px) saturate(1.7);
+  --glass-fill: rgba(255, 255, 255, .62);
+  --glass-fill-strong: rgba(252, 252, 253, .74);
+  --glass-fill-popover: rgba(255, 255, 255, .80);
+  --glass-stroke: rgba(255, 255, 255, .58);
+  --glass-edge: rgba(28, 30, 34, .10);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, .70);
+  /* a hairline ring instead of a border: a 1px border's inner arc never matches the
+     outer radius exactly and leaves a notch at the corners */
+  --glass-ring: 0 0 0 1px rgba(28, 30, 34, .07);
+  --glass-shadow: 0 10px 34px rgba(17, 24, 39, .16), 0 1px 3px rgba(17, 24, 39, .10);
+  --glass-shadow-soft: 0 4px 18px rgba(17, 24, 39, .12), 0 1px 2px rgba(17, 24, 39, .08);
+
+  /* vibrancy fills, separators */
+  --fill-hover: rgba(120, 120, 128, .12);
+  --fill-press: rgba(120, 120, 128, .20);
+  --border: rgba(60, 60, 67, .14);
+  --separator: rgba(60, 60, 67, .10);
+  --hover-grey: rgba(120, 120, 128, .12);
+
+  /* concentric radii: outer panel → inner control → chip */
+  --r-panel: 24px;
+  --r-bar: 26px;
+  --r-control: 14px;
+  --r-row: 10px;
+  --r-chip: 8px;
+}
+
+body {
+  box-sizing: border-box;
+  font-family: var(--font-ui);
+  color: var(--text-black);
+  -webkit-font-smoothing: antialiased;
+  /* The map gets dragged constantly: never let the browser highlight UI text */
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Text fields stay fully usable (editing, selecting, copying the share link) */
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+  font-family: var(--font-ui);
+}
+img {
+  -webkit-user-drag: none;
+}
+
+/* Shared glass recipe for the floating controls.
+   The sidebar is deliberately not in this group: a blurred layer that big gets
+   composited separately and stops honouring its own border-radius. */
+#drawing-controls,
+#zoom-controls,
+#location-control,
+#search-box,
+#more-menu,
+#popup,
+#share,
+#color-list {
+  background-color: var(--glass-fill);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 0;
+  box-shadow: var(--glass-shadow), var(--glass-highlight), var(--glass-ring);
+}
+
+/* Popup & overlay */
+#overlay {
+  position: absolute;
+  z-index: 9999999;
+  background-color: rgba(16, 18, 22, .28);
+  top: 0px;
+  left: 0px;
+  width: 100%;
+  height: 100%;
+  visibility: hidden;
+}
+#popup {
+  position: absolute;
+  margin: auto;
+  left: 0px;
+  right: 0px;
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+  width: 440px;
+  height: auto;
+  min-height: 0;
+  padding: 30px 0 26px 0;
+  background-color: var(--glass-fill-popover);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 0;
+  border-radius: var(--r-panel);
+  box-shadow: 0 24px 70px rgba(17, 24, 39, .22), var(--glass-highlight), var(--glass-ring);
+  visibility: hidden;
+  z-index: 99999999;
+}
+.header-text {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 20px;
+  letter-spacing: -.01em;
+  color: var(--text-black);
+  text-align: center;
+  margin-top: 2px;
+}
+.subheader-text {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-grey);
+  text-align: center;
+  margin-top: 8px;
+  padding: 0 28px;
+}
+/* Email + password auth */
+#auth-form {
+  width: 100%;
+  padding: 0 34px;
+  box-sizing: border-box;
+  margin: 22px auto 0 auto;
+}
+#auth-form input {
+  width: 100%;
+  height: 44px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  background-color: rgba(255, 255, 255, .72);
+  font-size: 15px;
+  color: var(--text-black);
+  outline: none;
+  transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+#auth-form input:focus {
+  border-color: var(--accent);
+  background-color: rgba(255, 255, 255, .92);
+  box-shadow: 0 0 0 3.5px rgba(10, 108, 255, .18);
+}
+#auth-form input::placeholder {
+  color: var(--text-tertiary);
+}
+#auth-name {
+  display: none;
+}
+#auth-submit {
+  width: 100%;
+  height: 48px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: var(--r-control);
+  background-color: var(--accent);
+  color: #FFF;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background-color .15s ease, transform .06s ease;
+}
+#auth-submit:hover {
+  background-color: #2A80FF;
+}
+#auth-submit:active {
+  background-color: var(--accent-press);
+  transform: scale(.99);
+}
+#auth-submit.auth-busy {
+  opacity: .6;
+  cursor: default;
+  transform: none;
+}
+#auth-switch {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-grey);
+}
+#auth-switch span {
+  font-weight: 600;
+  color: var(--accent-press);
+  cursor: pointer;
+}
+#auth-switch span:hover {
+  text-decoration: underline;
+}
+#auth-message {
+  min-height: 18px;
+  margin: 10px 34px 0 34px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-grey);
+}
+#auth-message.auth-error {
+  color: #B3261E;
+}
+#auth-message.auth-ok {
+  color: #1F7A45;
+}
+#create-map {
+  display: none;
+  height: 48px;
+  line-height: 48px;
+  border-radius: var(--r-control);
+  background-color: var(--accent);
+  border: 0;
+  box-sizing: border-box;
+  text-align: center;
+  color: #FFF;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  width: calc(100% - 68px);
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 22px;
+  transition: background-color .15s ease;
+}
+#create-map:hover {
+  background-color: #2A80FF;
+}
+.signin {
+  visibility: visible !important;
+}
+/* Share popup */
+#share {
+  position: absolute;
+  margin: auto;
+  left: 0px;
+  top: 50%;
+  right: 0px;
+  bottom: auto;
+  transform: translateY(-50%);
+  width: 480px;
+  height: auto;
+  padding-bottom: 24px;
+  border-radius: var(--r-panel);
+  z-index: 99999999;
+  visibility: hidden;
+}
+#share-nav {
+  height: 52px;
+  width: 100%;
+  border-bottom: 1px solid var(--separator);
+  line-height: 52px;
+}
+#share span {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-black);
+  margin-left: 22px;
+}
+#close-share {
+  position: absolute;
+  right: 20px;
+  top: 18px;
+}
+#close-share:hover {
+  cursor: pointer;
+  opacity: .55;
+}
+#share input {
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  width: 288px;
+  height: 42px;
+  background-color: rgba(255, 255, 255, .72);
+  color: var(--text-grey);
+  margin-left: 22px;
+  margin-top: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  text-indent: 14px;
+  display: inline-block;
+  vertical-align: middle;
+  outline: none;
+}
+#share input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3.5px rgba(10, 108, 255, .18);
+}
+#share-copy {
+  background-color: var(--accent);
+  border-radius: var(--r-control);
+  color: #FFF;
+  text-align: center;
+  height: 42px;
+  line-height: 42px;
+  float: right;
+  margin-right: 22px;
+  vertical-align: middle;
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 600;
+  padding-left: 18px;
+  padding-right: 18px;
+  margin-top: 20px;
+  cursor: pointer;
+  transition: background-color .15s ease;
+}
+#share-copy:hover {
+  background-color: #2A80FF;
+}
+.share-show {
+  visibility: visible !important;
+}
+
+/* Left sidebar — a floating panel over the map.
+   No backdrop blur here on purpose: the sidebar is the largest surface, and a
+   blurred layer this big shows compositing seams at the corners on 2x displays.
+   Apple's own guidance points the same way — larger elements like sidebars are
+   more opaque than toolbars so their content stays legible. */
+#sidebar {
+  background-color: rgba(251, 251, 252, .94);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 0;
+  box-shadow: 0 10px 30px rgba(17, 24, 39, .14), 0 1px 2px rgba(17, 24, 39, .08);
+  width: 330px;
+  height: auto;
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  bottom: 12px;
+  border-radius: var(--r-panel);
+  box-sizing: border-box;
+  overflow: hidden;
+  z-index: 10; /* the map is full-bleed and comes later in the DOM */
+  display: flex;
+  flex-direction: column;
+}
+/* Main styles for sidebar */
+.section {
+  border-bottom: 1px solid var(--separator);
+  padding: 18px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+}
+.section:last-of-type {
+  border-bottom: 0;
+}
+.section-name {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .01em;
+  color: var(--text-grey);
+}
+table {
+  border-spacing: 0px 0px;
+  margin-left: -6px;
+  margin-top: 8px;
+  width: calc(100% + 12px);
+  /* Fixed layout so the four columns are equal. With the default auto layout the
+     columns size to their label text, and "Groceries"/"Services" being wider than
+     "Food"/"Hotels" left the icons at 82 / 70.5 / 71 px steps instead of even ones. */
+  table-layout: fixed;
+}
+th {
+  width: 25%;
+  font-weight: 500;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-grey);
+  border-radius: var(--r-chip);
+  padding-top: 10px;
+  padding-bottom: 10px;
+  transition: background-color .14s ease;
+}
+th:hover {
+  cursor: pointer;
+  background-color: var(--fill-hover);
+}
+th img {
+  margin-bottom: 7px;
+}
+/* Map details section */
+#map-name {
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-black) !important;
+  -webkit-text-fill-color: var(--text-black) !important;
+  opacity: 1;
+  border: 0px;
+  text-indent: 0px;
+  box-sizing: border-box;
+  padding: 0px;
+  outline: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  width: 100%;
+  border-radius: 0;
+}
+.map-editing {
+  border-bottom: 2px solid var(--accent) !important;
+}
+#map-description {
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-grey);
+  margin-top: 4px;
+  border: 0px;
+  text-indent: 0px;
+  box-sizing: border-box;
+  padding: 0px;
+  outline: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  width: 100%;
+}
+#map-description:focus {
+  border-bottom-color: var(--accent);
+}
+/* More button */
+#more-vertical {
+  position: absolute;
+  top: 18px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  /* Centre the icon with flex, not line-height: an inline <img> sits on the text
+     baseline, which leaves it pinned to the top of the circle (measured 0px above,
+     8px below before this change). */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+#more-vertical img {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+#more-vertical:hover {
+  cursor: pointer;
+  background-color: var(--fill-hover);
+}
+#more-menu {
+  position: absolute;
+  left: 354px;
+  z-index: 99999;
+  top: 24px;
+  border-radius: var(--r-control);
+  padding: 5px;
+  min-width: 170px;
+  visibility: hidden;
+  background-color: var(--glass-fill-popover);
+}
+.more-item {
+  font-size: 13px;
+  font-weight: 500;
+  height: 36px;
+  padding-left: 12px;
+  padding-right: 12px;
+  line-height: 36px;
+  text-decoration: none;
+  display: block;
+  border-radius: var(--r-chip);
+  color: var(--text-black) !important;
+}
+.more-item:first-child {
+  border-bottom: 0;
+}
+.more-item:hover {
+  background-color: var(--fill-hover);
+  cursor: pointer;
+}
+.menu-show {
+  visibility: visible !important;
+}
+/* Annotation section — the header sits above the scroller instead of being
+   sticky over it, so it needs no background of its own. A near-opaque band
+   inside an already translucent panel reads as a lighter white strip. */
+#annotations-section {
+  flex: 1 1 auto;
+  min-height: 90px;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#annotations-header {
+  flex: 0 0 auto;
+  position: static;
+  padding: 0 0 8px 0;
+  margin: 0;
+  background: transparent;
+}
+#annotations-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* let the list reach the panel edges while keeping its content aligned */
+  margin: 0 -18px -18px -18px;
+  padding: 0 18px 18px 18px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(60, 60, 67, .26) transparent;
+}
+#annotations-list::-webkit-scrollbar,
+#annotations-list::-webkit-scrollbar-track {
+  background: transparent;
+  width: 10px;
+}
+#annotations-list::-webkit-scrollbar-thumb {
+  background-color: rgba(60, 60, 67, .22);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+#hide-annotations {
+  float: right;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-grey);
+  vertical-align: top;
+  margin-top: 0;
+}
+#hide-annotations:hover {
+  cursor: pointer;
+  color: var(--accent-press);
+}
+/* Annotation list */
+.annotation-item {
+  min-height: 36px;
+  line-height: 36px;
+  margin: 1px -10px;
+  padding-left: 10px;
+  padding-right: 10px;
+  border-radius: var(--r-row);
+  transition: background-color .12s ease;
+  cursor: default;
+}
+.annotation-item:hover {
+  background-color: var(--fill-hover);
+}
+.annotation-name {
+  color: var(--text-black);
+  font-size: 13px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+.annotation-name span {
+  margin-left: 8px;
+  vertical-align: middle;
+  overflow: hidden;
+  max-width: 178px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
+.annotation-focus {
+  font-weight: 600 !important;
+}
+.annotation-item img {
+  vertical-align: middle;
+  display: inline-block;
+}
+.annotation-icon {
+  margin-left: 4px;
+  vertical-align: middle;
+  display: inline-block;
+  border-radius: 6px;
+}
+.delete-layer {
+  float: right;
+  right: 20px;
+  margin-top: 9px;
+  vertical-align: middle;
+  display: inline-block;
+  visibility: hidden;
+  opacity: .55;
+}
+.delete-layer:hover {
+  cursor: pointer;
+  opacity: 1;
+}
+.annotation-item:hover .delete-layer {
+  visibility: visible !important;
+}
+.arrow-open {
+  transform: rotate(90deg);
+}
+/* Collapsible part of the annotation */
+.annotation-closed {
+  display: none !important;
+}
+.annotation-details {
+  padding-left: 35px;
+  padding-bottom: 8px;
+}
+.annotation-description {
+  font-size: 12px;
+  color: var(--text-grey);
+  font-weight: 400;
+  line-height: 1.45;
+  width: 92%;
+}
+.annotation-data {
+  font-size: 12px;
+  color: var(--text-grey);
+  font-weight: 400;
+}
+.annotation-data-field {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 7px;
+  margin-top: 4px;
+}
+.annotation-data-field img {
+  margin-right: 4px;
+  vertical-align: middle;
+  opacity: .75;
+}
+/* Attribution section */
+#attribution-section {
+  border-bottom: 0;
+}
+#attribution {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 8px;
+}
+#attribution a {
+  color: inherit;
+}
+
+/* Map — full bleed, the glass panels float above it */
+#mapDiv {
+  position: absolute;
+  left: 0px;
+  height: 100%;
+  width: 100%;
+  top: 0px;
+  box-sizing: border-box;
+  background-color: #E9EAE6;
+  z-index: 0;
+}
+
+/* Observation mode */
+#outline {
+  z-index: 999999 !important;
+  position: absolute;
+  left: 0px;
+  height: 100%;
+  width: 100%;
+  top: 0px;
+  box-sizing: border-box;
+  border: 6px solid transparent;
+  pointer-events: none;
+  visibility: hidden;
+}
+#observing-name {
+  height: 30px;
+  line-height: 30px;
+  color: #FFF;
+  font-weight: 600;
+  font-size: 13px;
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding-left: 10px;
+  padding-right: 10px;
+  border-radius: 999px;
+  z-index: 99999999;
+  box-shadow: 0 2px 10px rgba(17, 24, 39, .22);
+}
+.observing {
+  visibility: visible !important;
+}
+
+/* Search field — glass capsule over the map */
+#search-box {
+  height: 46px;
+  width: 360px;
+  font-size: 14px;
+  border-radius: var(--r-control);
+  position: absolute;
+  left: calc(calc(100% - 342px) / 2);
+  transform: translateX(calc(-50% + 342px));
+  top: 16px;
+  box-sizing: border-box;
+  z-index: 9999;
+  box-shadow: var(--glass-shadow-soft), var(--glass-highlight);
+  transition: box-shadow .18s ease;
+}
+#search-box:focus-within {
+  box-shadow: 0 0 0 3.5px rgba(10, 108, 255, .20), var(--glass-shadow-soft);
+}
+#search-box img:hover {
+  cursor: pointer;
+  opacity: .55;
+}
+#search-input {
+  border: 0px;
+  box-sizing: border-box;
+  height: 100%;
+  width: 100%;
+  border-radius: var(--r-control);
+  background: transparent;
+  text-indent: 15px;
+  left: 0px;
+  top: 0px;
+  font-weight: 400;
+  font-size: 14px;
+  color: var(--text-black);
+  outline: none;
+}
+#search-box img {
+  position: absolute;
+  right: 15px;
+  top: 15px;
+  width: 17px;
+  opacity: .45;
+}
+::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Drawing tools — floating glass capsule */
+#drawing-controls {
+  position: absolute;
+  left: calc(calc(100% - 342px) / 2);
+  transform: translateX(calc(-50% + 342px));
+  height: 54px;
+  border-radius: var(--r-bar);
+  bottom: 16px;
+  z-index: 99999;
+  box-sizing: border-box;
+  padding: 0 8px;
+  white-space: nowrap;
+  /* Flex instead of vertical-align: the buttons used to be inline-blocks aligned to
+     the text baseline, which left every icon about 1.8px below the bar's centre. */
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.tool {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  /* The icon is centred by flex, never by line-height: an inline <img> sits on the
+     text baseline, so the glyph ends up low inside the 38px hit area. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  transition: background-color .14s ease;
+}
+.tool img {
+  opacity: .48;
+  /* Fixed 22x22 box for all six icons: the source SVGs are 24/23/22px, so a width-only
+     rule produced heights of 22 / 21.08 and shifted the optical centre. */
+  display: block;
+  width: 22px;
+  height: 22px;
+  transition: opacity .12s cubic-bezier(.05,.03,.35,1);
+}
+.tool img:hover {
+  cursor: pointer;
+  opacity: 1;
+}
+.tool:hover {
+  cursor: pointer !important;
+  background-color: var(--fill-hover);
+}
+.tool-active {
+  background-color: var(--fill-press);
+}
+.tool-active img {
+  opacity: 1 !important;
+}
+/* Color picker */
+#color-picker {
+  position: relative; /* anchor for the swatch row */
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-edge);
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin: 0 0 0 2px;
+  background-color: rgba(255, 255, 255, .55);
+  transition: border-color .2s cubic-bezier(.05,.03,.35,1);
+}
+#color-picker:hover {
+  border-color: rgba(28, 30, 34, .3) !important;
+  cursor: pointer;
+}
+#inner-color {
+  background-color: #624EEF;
+  border-radius: 50%;
+  height: 22px;
+  width: 22px;
+  margin: 0;
+}
+#color-list {
+  position: absolute;
+  right: -8px;
+  bottom: calc(100% + 14px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* max-content, not fit-content: an absolutely positioned box with no left/right
+     shrinks to the space left of the container edge and wraps the swatches */
+  width: max-content;
+  height: auto;
+  padding: 10px 12px;
+  border-radius: var(--r-control);
+  visibility: hidden;
+  z-index: 100000;
+}
+.color-enabled {
+  visibility: visible !important;
+}
+.color {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .08);
+  transition: transform .12s cubic-bezier(.05,.03,.35,1);
+}
+.color:hover {
+  transform: scale(1.16);
+}
+/* Keep the swatch row inside the viewport on narrow screens */
+@media (max-width: 560px) {
+  #color-list {
+    gap: 8px;
+    padding: 8px 10px;
+    right: -20px;
+  }
+  .color {
+    width: 20px;
+    height: 20px;
+  }
+}
+/* Should probably do this programmatically... */
+#color1, .colorEC1D43 {
+  background: #EC1D43 !important;
+}
+#color2, .colorEC811D {
+  background: #EC811D !important;
+}
+#color3, .colorECBE1D {
+  background: #ECBE1D !important;
+}
+#color4, .colorB6EC1D {
+  background: #B6EC1D !important;
+}
+#color5, .color1DA2EC {
+  background: #1DA2EC !important;
+}
+#color6, .color781DEC {
+  background: #781DEC !important;
+}
+#color7, .colorCF1DEC {
+  background: #CF1DEC !important;
+}
+#color8, .color222222 {
+  background: #222222 !important;
+}
+/* Hover label for the tool buttons */
+#tooltip {
+  background-color: var(--glass-fill-popover);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 0;
+  padding-left: 10px;
+  padding-right: 10px;
+  height: 28px;
+  line-height: 28px;
+  color: var(--text-black);
+  text-align: center;
+  font-weight: 500;
+  font-size: 12px;
+  border-radius: var(--r-chip);
+  position: absolute;
+  margin-top: -75px;
+  transform: translateX(-50%);
+  margin-left: 14px;
+  box-shadow: var(--glass-shadow-soft), var(--glass-ring);
+}
+#tooltip:after {
+  content: "";
+  position: absolute;
+  bottom: -12px;
+  z-index: 9999;
+  left: 50%;
+  margin-left: -6px;
+  border-width: 6px;
+  border-style: solid;
+  border-color: rgba(255, 255, 255, .82) transparent transparent transparent;
+}
+
+/* Right side of the nav — one prominent action */
+#right-nav {
+  position: absolute;
+  z-index: 9999;
+  right: 16px;
+  top: 16px;
+  vertical-align: middle;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#share-button {
+  height: 40px;
+  padding-left: 18px;
+  padding-right: 18px;
+  color: #FFF;
+  background-color: var(--accent);
+  text-align: center;
+  line-height: 40px;
+  border-radius: var(--r-control);
+  display: inline-block;
+  font-weight: 600;
+  vertical-align: middle;
+  font-size: 14px;
+  box-shadow: 0 4px 14px rgba(10, 108, 255, .28);
+  transition: background-color .15s ease, transform .06s ease;
+}
+#share-button:hover {
+  cursor: pointer;
+  background-color: #2A80FF;
+}
+#share-button:active {
+  transform: scale(.98);
+  background-color: var(--accent-press);
+}
+#profile {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background-color: #781DEC;
+  background-size: 34px 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  overflow: hidden;
+  color: #FFF;
+  font-size: 14px;
+  font-weight: 600;
+  border: 2px solid rgba(255, 255, 255, .9);
+  box-shadow: 0 2px 8px rgba(17, 24, 39, .18);
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  cursor: pointer;
+}
+#profile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* Location control */
+#location-control {
+  position: absolute;
+  right: 16px;
+  bottom: 113px;
+  width: 44px;
+  height: 44px;
+  line-height: 44px;
+  border-radius: var(--r-control);
+  z-index: 999999;
+  text-align: center;
+  box-sizing: border-box;
+  box-shadow: var(--glass-shadow-soft), var(--glass-highlight);
+  transition: background-color .14s ease;
+}
+#location-control img {
+  margin-top: 13px;
+  opacity: .75;
+}
+#location-control:hover {
+  cursor: pointer;
+  background-color: rgba(255, 255, 255, .82);
+}
+/* Zoom controls */
+#zoom-controls {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  border-radius: var(--r-control);
+  width: 44px;
+  z-index: 999999;
+  overflow: hidden;
+  box-shadow: var(--glass-shadow-soft), var(--glass-highlight);
+}
+#zoom-in, #zoom-out {
+  height: 44px;
+  line-height: 44px;
+  text-align: center;
+  box-sizing: border-box;
+  transition: background-color .14s ease;
+}
+#zoom-in {
+  border-bottom: 1px solid var(--separator);
+}
+#zoom-in:hover, #zoom-out:hover {
+  cursor: pointer;
+  background-color: var(--fill-hover);
+}
+/* Hide default leaflet attribution, it's not a great place for it */
+.leaflet-control-attribution {
+  display: none;
+}
+/* Change cursor when mousing over clickable layer */
+.leaflet-clickable {
+  cursor: crosshair !important;
+}
+/* Change cursor when over entire map */
+.leaflet-container {
+  cursor: crosshair !important;
+  background: #E9EAE6;
+}
+/* Misc Leaflet overrides */
+.hints {
+  pointer-events: none !important;
+}
+.leaflet-div-icon {
+  background: transparent !important;
+  border: none !important;
+}
+.leaflet-marker-pane {
+  z-index: 100000;
+  pointer-events: none;
+}
+.leaflet-overlay-pane, .leaflet-overlay-pane img {
+  z-index: 99999;
+}
+.leaflet-overlay-pane canvas {
+  z-index: 230;
+}
+.leaflet-tooltip-pane {
+  z-index: 100001;
+}
+.leaflet-marker-icon {
+  pointer-events: all !important;
+}
+.tooltip-off {
+  visibility: hidden !important;
+}
+/* Default tooltip = small glass chip (hints while drawing) */
+.leaflet-tooltip {
+  background-color: var(--glass-fill-popover);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  backdrop-filter: blur(16px) saturate(1.6);
+  border: 0 !important;
+  border-radius: var(--r-chip);
+  color: var(--text-black);
+  font-weight: 500;
+  font-size: 12px;
+  box-shadow: var(--glass-shadow-soft), var(--glass-ring) !important;
+  outline: none;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+.leaflet-tooltip:before {
+  border: 0px !important;
+}
+.gm-style .gm-style-iw-t::after {
+  background: none;
+}
+.gm-style-iw {
+  box-shadow: none !important;
+  background: #EC1D43 !important;
+  color: #FFF !important;
+}
+.gm-style-iw button {
+  display: none !important;
+}
+.gm-style .gm-style-iw-c {
+  padding: 0px;
+  transform: none !important;
+}
+.gm-style-iw-d {
+  overflow: hidden !important;
+}
+.gm-style-iw .gm-style-iw-c {
+  max-width: none !important;
+  max-height: none !important;
+  border-radius: var(--r-chip) !important;
+}
+.gm-style .gm-style-iw-c {
+  border-radius: var(--r-chip) !important;
+}
+/* User cursors */
+.cursoricon {
+  z-index: 9999 !important;
+}
+.cursor-label {
+  padding: 4px 8px !important;
+  text-align: left;
+  font-weight: 600 !important;
+  font-size: 11px !important;
+  border-radius: 999px !important;
+  border: 1.5px solid rgba(255, 255, 255, .9) !important;
+  box-shadow: 0 2px 8px rgba(17, 24, 39, .18) !important;
+}
+/* Popover for naming markers, lines, and areas */
+.create-shape-flow {
+  background-color: var(--glass-fill-popover);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 0 !important;
+  border-radius: var(--r-control) !important;
+  box-shadow: 0 18px 48px rgba(17, 24, 39, .20), var(--glass-highlight), var(--glass-ring) !important;
+  padding: 14px;
+  width: 250px;
+  pointer-events: all !important;
+}
+.create-shape-flow input, .create-shape-flow textarea {
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+  border-radius: var(--r-chip);
+  height: 34px;
+  margin-bottom: 10px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  font-size: 13px;
+  resize: none;
+  text-indent: 8px;
+  background-color: rgba(255, 255, 255, .75);
+  color: var(--text-black);
+  outline: none;
+}
+.create-shape-flow input:focus, .create-shape-flow textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10, 108, 255, .18);
+}
+.create-shape-flow button {
+  background: var(--fill-hover);
+  color: var(--text-black);
+  border: none;
+  height: 34px;
+  line-height: 34px;
+  padding-left: 16px;
+  padding-right: 16px;
+  border-radius: var(--r-chip);
+  font-weight: 500;
+  font-size: 13px;
+  transition: background-color .14s ease;
+}
+.create-shape-flow button:hover {
+  cursor: pointer;
+  background: var(--fill-press);
+}
+.create-shape-flow .save-button {
+  background: var(--accent);
+  color: #FFF;
+}
+.create-shape-flow .save-button:hover {
+  background: #2A80FF;
+}
+.arrow-down {
+  width: 0;
+  height: 0;
+  border-left: 13px solid transparent;
+  border-right: 13px solid transparent;
+  border-top: 11px solid rgba(255, 255, 255, .82);
+  position: absolute;
+  margin-left: auto;
+  margin-right: auto;
+  left: 0px;
+  right: 0px;
+  bottom: 0px;
+  margin-bottom: -10px;
+}
+#buttons {
+  float: right;
+}
+/* Find nearby: dim the category while its lookup is running */
+.find-nearby {
+  cursor: pointer;
+  transition: opacity .15s ease, background-color .14s ease;
+}
+.find-nearby.nearby-loading {
+  opacity: .4;
+  pointer-events: none;
+}
+#buttons2 {
+  float: right;
+  margin-top: 5px;
+}
+.save-button, .save-button-place {
+  background: var(--accent);
+  color: #FFF;
+  float: right;
+  vertical-align: middle;
+}
+.cancel-button, .cancel-button-place {
+  background: var(--fill-hover) !important;
+  color: var(--text-black) !important;
+  margin-right: 9px !important;
+}
+#shape-desc {
+  height: 96px;
+  padding-top: 8px;
+}
+label {
+  color: var(--text-grey);
+  font-weight: 500;
+  margin-bottom: 6px;
+  font-size: 12px;
+  display: block;
+}
+h1 {
+  color: var(--text-black);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  margin-top: 2px;
+  white-space: initial;
+}
+h2 {
+  color: var(--text-grey);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+h3 {
+  color: var(--text-grey);
+  font-size: 12px;
+  font-weight: 400;
+  margin-bottom: 0px;
+  margin-top: 0px;
+}
+h3 img {
+  display: inline-block;
+  vertical-align: middle;
+}
+/* Small data like coordinates, distance, and area */
+.shape-data {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 7px;
+  margin-bottom: 3px;
+  margin-top: 4px;
+}
+.shape-data img {
+  margin-right: 4px;
+  opacity: .75;
+}
+/* Used to prevent selecting images and whatnot */
+.noselect {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+/* ============================================================
+   Accessibility
+   ============================================================ */
+
+/* Visible keyboard focus everywhere, including the text fields that
+   opted out of outlines for pointer use */
+:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px;
+  border-radius: var(--r-chip);
+}
+#map-name:focus-visible,
+#map-description:focus-visible {
+  outline: none !important;
+}
+
+/* Reduce Transparency: swap every glass surface for an opaque one */
+@media (prefers-reduced-transparency: reduce) {
+  #sidebar,
+  #drawing-controls,
+  #zoom-controls,
+  #location-control,
+  #search-box,
+  #more-menu,
+  #popup,
+  #share,
+  #color-list,
+  #tooltip,
+  .leaflet-tooltip,
+  .create-shape-flow {
+    background-color: #FFFFFF !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  #overlay {
+    background-color: rgba(16, 18, 22, .55);
+  }
+}
+
+/* Increase Contrast: stronger strokes and text */
+@media (prefers-contrast: more) {
+  :root {
+    --text-grey: #33383F;
+    --text-tertiary: #3A4048;
+    --border: rgba(0, 0, 0, .45);
+    --separator: rgba(0, 0, 0, .30);
+    --glass-stroke: rgba(0, 0, 0, .30);
+  }
+  #sidebar,
+  #drawing-controls,
+  #zoom-controls,
+  #location-control,
+  #search-box,
+  #more-menu,
+  #popup,
+  #share,
+  #color-list {
+    background-color: rgba(255, 255, 255, .92);
+  }
+  #overlay {
+    background-color: rgba(16, 18, 22, .55);
+  }
+}
+
+/* Reduce Motion: no scaling, no transitions */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: .001ms !important;
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  #auth-submit:active,
+  #share-button:active,
+  .color:hover {
+    transform: none !important;
+  }
+}
